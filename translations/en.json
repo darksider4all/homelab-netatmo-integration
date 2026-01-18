@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Connect to Homelab Climate"
+      }
+    },
+    "abort": {
+      "already_configured": "Homelab Climate is already configured",
+      "no_thermostats_found": "No thermostats found in your Netatmo account",
+      "auth_failed": "Authentication failed. Please try again.",
+      "oauth_error": "OAuth authentication error",
+      "unknown": "Unexpected error occurred"
+    },
+    "create_entry": {
+      "default": "Homelab Climate connected successfully"
+    }
+  },
+  "services": {
+    "set_schedule": {
+      "name": "Set Schedule",
+      "description": "Switch to a specific Netatmo heating schedule",
+      "fields": {
+        "entity_id": {
+          "name": "Climate Entity",
+          "description": "Target climate entity"
+        },
+        "schedule_name": {
+          "name": "Schedule Name",
+          "description": "Name of the schedule to activate"
+        }
+      }
+    }
+  }
+}

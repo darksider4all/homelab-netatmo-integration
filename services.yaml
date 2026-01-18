@@ -1,0 +1,20 @@
+set_schedule:
+  name: Set Schedule
+  description: Switch to a specific Netatmo heating schedule
+  fields:
+    entity_id:
+      name: Climate Entity
+      description: Target climate entity
+      required: true
+      example: "climate.living_room"
+      selector:
+        entity:
+          domain: climate
+          integration: netatmo_custom
+    schedule_name:
+      name: Schedule Name
+      description: Name of the schedule to activate
+      required: true
+      example: "Winter Schedule"
+      selector:
+        text:

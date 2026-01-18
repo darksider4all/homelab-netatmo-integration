@@ -1,0 +1,11 @@
+{
+  "domain": "netatmo_custom",
+  "name": "Homelab Climate",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["application_credentials", "webhook"],
+  "documentation": "https://dev.netatmo.com/apidocumentation/energy",
+  "iot_class": "cloud_push",
+  "requirements": [],
+  "version": "1.0.0"
+}

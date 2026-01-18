@@ -16,6 +16,22 @@
       "default": "Homelab Climate connected successfully"
     }
   },
+  "entity": {
+    "climate": {
+      "thermostat": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "home": "Home",
+              "away": "Away",
+              "Frost Guard": "Frost Guard",
+              "none": "None"
+            }
+          }
+        }
+      }
+    }
+  },
   "services": {
     "set_schedule": {
       "name": "Set Schedule",

@@ -66,6 +66,15 @@ async def async_setup_entry(
                     relay_id = module["id"]
             break
 
+    # Get rooms from homesdata to map modules to rooms
+    room_module_map = {}  # module_id -> room_id
+    for home in homes_data:
+        if home["id"] == home_id:
+            for room in home.get("rooms", []):
+                for mid in room.get("module_ids", []):
+                    room_module_map[mid] = room["id"]
+            break
+
     # Create boiler status sensor for thermostat modules
     for module in modules:
         module_id = module.get("id")
@@ -74,6 +83,7 @@ async def async_setup_entry(
         # Boiler status is available on thermostats (NATherm1, OTH, OTM)
         if module_type in ["NATherm1", "OTH", "OTM"]:
             module_name = module_names.get(module_id, module_id)
+            room_id = room_module_map.get(module_id)
 
             # Boiler status binary sensor
             entities.append(
@@ -82,12 +92,13 @@ async def async_setup_entry(
                 )
             )
 
-            # Anticipating binary sensor (pre-heating)
-            entities.append(
-                NetatmoAnticipatingStatusSensor(
-                    coordinator, module_id, module_name, module_type, home_id
+            # Anticipating binary sensor (pre-heating) - uses room data
+            if room_id:
+                entities.append(
+                    NetatmoAnticipatingStatusSensor(
+                        coordinator, module_id, module_name, module_type, home_id, room_id
+                    )
                 )
-            )
 
         # Reachable sensor for all modules
         module_name = module_names.get(module_id, module_id)
@@ -172,12 +183,14 @@ class NetatmoAnticipatingStatusSensor(CoordinatorEntity, BinarySensorEntity):
         module_name: str,
         module_type: str,
         home_id: str,
+        room_id: str,
     ):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._module_id = module_id
         self._module_type = module_type
         self._home_id = home_id
+        self._room_id = room_id
 
         self._attr_unique_id = f"{ENTITY_PREFIX}_{home_id}_{module_id}_anticipating"
         self._attr_name = "Anticipating"
@@ -191,18 +204,18 @@ class NetatmoAnticipatingStatusSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if thermostat is anticipating (pre-heating)."""
-        module = self._get_module()
-        if not module:
+        room = self._get_room()
+        if not room:
             return None
 
-        return module.get("anticipating", False)
+        return room.get("anticipating", False)
 
-    def _get_module(self) -> dict | None:
-        """Get module data from coordinator."""
+    def _get_room(self) -> dict | None:
+        """Get room data from coordinator."""
         home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
-        for module in home_status.get("modules", []):
-            if module.get("id") == self._module_id:
-                return module
+        for room in home_status.get("rooms", []):
+            if room.get("id") == self._room_id:
+                return room
         return None
 
 

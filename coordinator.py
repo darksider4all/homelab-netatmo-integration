@@ -47,31 +47,16 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             homes_data = await self.api.async_get_homes_data()
             home_status = await self.api.async_get_home_status(self.home_id)
 
-            # Merge data for easy access by entities
-            data = {
+            return {
                 "homes_data": homes_data,
                 "home_status": home_status,
                 "timestamp": time.time(),
             }
 
-            _LOGGER.debug(
-                f"Updated Netatmo data (webhook_active: {self.webhook_active})"
-            )
-            return data
-
         except NetatmoAPIError as err:
             raise UpdateFailed(f"Error communicating with Netatmo API: {err}")
 
     async def async_handle_webhook(self, webhook_data: dict) -> None:
-        """Handle webhook update and immediately refresh coordinator data.
-
-        Args:
-            webhook_data: Webhook event data from Netatmo
-        """
-        _LOGGER.debug(f"Webhook received: {webhook_data}")
-
-        # Mark webhook as active
+        """Handle webhook update and immediately refresh coordinator data."""
         self.webhook_active = True
-
-        # Trigger immediate data refresh
         await self.async_request_refresh()

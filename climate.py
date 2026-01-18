@@ -114,10 +114,20 @@ def _get_room_status(data: dict, room_id: str) -> dict | None:
     return None
 
 
+PRESET_MODE_ICONS = {
+    PRESET_HOME: "mdi:home-thermometer",
+    PRESET_AWAY: "mdi:home-export-outline",
+    PRESET_FROST_GUARD: "mdi:snowflake-thermometer",
+    PRESET_NONE: "mdi:thermostat",
+    "Frost Guard": "mdi:snowflake-thermometer",  # Also handle string directly
+}
+
+
 class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
     """Netatmo thermostat climate entity."""
 
     _attr_has_entity_name = True
+    _attr_translation_key = "thermostat"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = TEMP_STEP
     _attr_min_temp = MIN_TEMP
@@ -152,11 +162,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         module_type = module.get("type", "NATherm1") if module else "NATherm1"
         module_name = module.get("name", room["name"]) if module else room["name"]
 
-        # Generate slug from room name (e.g., "Living Room" -> "living_room")
-        room_name = room["name"]
-        room_slug = room_name.lower().replace(" ", "_").replace("-", "_")
-
-        # Entity attributes - creates climate.netatmo_living_room
+        # Entity attributes
         self._attr_unique_id = f"{ENTITY_PREFIX}_{home_id}_{self._room_id}"
         self._attr_name = "Climate"  # Will show as "Device Name Climate"
         self._attr_has_entity_name = True
@@ -184,6 +190,11 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             PRESET_FROST_GUARD,
             PRESET_NONE,
         ]
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on current preset mode."""
+        return PRESET_MODE_ICONS.get(self.preset_mode, "mdi:thermostat")
 
     @property
     def current_temperature(self) -> float | None:
@@ -240,33 +251,36 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if hasattr(self, "_optimistic_preset") and self._optimistic_preset:
             return self._optimistic_preset
 
-        home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
-        therm_mode = home_status.get("therm_mode")
+        # Get room-level setpoint mode
+        room_status = self._get_room_status()
+        setpoint_mode = room_status.get("therm_setpoint_mode") if room_status else None
 
-        # Map Netatmo home modes to HA presets
-        if therm_mode == "schedule":
+        # Map Netatmo room setpoint modes to HA presets
+        if setpoint_mode == "schedule":
             return PRESET_HOME
-        elif therm_mode == "away":
+        elif setpoint_mode == "away":
             return PRESET_AWAY
-        elif therm_mode == "hg":
+        elif setpoint_mode in ("hg", "frost guard"):
             return PRESET_FROST_GUARD
-        elif therm_mode == "off":
-            return PRESET_NONE
-
+        # off, manual, max, or unknown modes
         return PRESET_NONE
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
         status = self._get_room_status()
-        if not status:
-            return {}
 
-        return {
-            "heating_power_request": status.get("heating_power_request", 0),
-            "therm_setpoint_mode": status.get("therm_setpoint_mode"),
+        attrs = {
             "room_id": self._room_id,
         }
+
+        if status:
+            attrs["heating_power_request"] = status.get("heating_power_request", 0)
+            attrs["netatmo_setpoint_mode"] = status.get("therm_setpoint_mode")
+            attrs["anticipating"] = status.get("anticipating", False)
+            attrs["open_window"] = status.get("open_window", False)
+
+        return attrs
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
@@ -328,29 +342,18 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
         netatmo_mode = mode_map.get(preset_mode)
         if not netatmo_mode:
-            _LOGGER.error(f"Unknown preset mode: {preset_mode}")
             return
 
-        _LOGGER.debug(f"Setting preset mode: {preset_mode} -> Netatmo mode: {netatmo_mode}")
-
         try:
-            # Set optimistic value for immediate UI update
             self._optimistic_preset = preset_mode
             self.async_write_ha_state()
 
-            result = await api.async_set_therm_mode(self._home_id, mode=netatmo_mode)
-            _LOGGER.debug(f"set_therm_mode response: {result}")
+            await api.async_set_therm_mode(self._home_id, mode=netatmo_mode)
 
-            # Clear optimistic value and refresh from API
             self._optimistic_preset = None
             await self.coordinator.async_request_refresh()
-
-            # Log the updated state
-            home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
-            _LOGGER.debug(f"After refresh - therm_mode from API: {home_status.get('therm_mode')}")
         except Exception as err:
             _LOGGER.error(f"Failed to set preset mode: {err}")
-            # Clear optimistic value on error
             self._optimistic_preset = None
             self.async_write_ha_state()
 

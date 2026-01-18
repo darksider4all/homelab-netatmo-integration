@@ -1,4 +1,5 @@
 """Netatmo API client for custom integration."""
+import json
 import logging
 from typing import Any
 
@@ -69,19 +70,15 @@ class NetatmoAPI:
             _LOGGER.error(f"Failed to get access token: {err}")
             raise NetatmoAuthError(f"Failed to get access token: {err}")
 
-        # Prepare request
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {access_token}"
         url = f"{self._base_url}{endpoint}"
-
-        _LOGGER.debug(f"Making {method} request to {url}")
 
         try:
             async with self._session.request(
                 method, url, headers=headers, **kwargs
             ) as resp:
                 response_text = await resp.text()
-                _LOGGER.debug(f"Response status: {resp.status}, body: {response_text[:500]}")
 
                 if resp.status == 401:
                     raise NetatmoAuthError(f"Unauthorized - token may be invalid. Response: {response_text}")
@@ -89,8 +86,6 @@ class NetatmoAPI:
                     raise NetatmoAuthError(f"Forbidden - re-authentication required. Response: {response_text}")
 
                 resp.raise_for_status()
-
-                import json
                 result = json.loads(response_text)
 
                 # Check Netatmo API status

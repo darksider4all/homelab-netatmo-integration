@@ -29,7 +29,7 @@ DATA_HOME_ID = "home_id"
 CONF_WEBHOOK_ID = "webhook_id"
 
 # Preset modes (extending HA's built-in presets)
-PRESET_FROST_GUARD = "frost_guard"
+PRESET_FROST_GUARD = "Frost Guard"
 PRESET_SCHEDULE = "schedule"
 PRESET_MANUAL = "manual"
 

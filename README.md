@@ -1,5 +1,7 @@
 # Netatmo Custom Thermostat
 
+![Logo](logo.png)
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
 Custom Home Assistant integration for Netatmo Thermostats with enhanced local polling and webhook support. This integration is designed to replace or work alongside the native Netatmo integration to provide more granular control and faster updates for climate devices.

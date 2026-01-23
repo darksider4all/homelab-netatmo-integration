@@ -114,8 +114,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if webhook_id:
             async_unregister_webhook(hass, webhook_id)
 
-        # Remove data
-        hass.data[DOMAIN].pop(entry.entry_id)
+        # Remove data (use pop with default to avoid KeyError)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+
+        # Unregister service if this is the last entry
+        if not hass.data[DOMAIN] and hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
+            hass.services.async_remove(DOMAIN, SERVICE_SET_SCHEDULE)
 
     return unload_ok
 

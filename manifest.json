@@ -1,10 +1,11 @@
 {
   "domain": "netatmo_custom",
   "name": "Homelab Climate",
-  "codeowners": [],
+  "codeowners": ["@darksider4all"],
   "config_flow": true,
   "dependencies": ["application_credentials", "webhook"],
-  "documentation": "https://dev.netatmo.com/apidocumentation/energy",
+  "documentation": "https://github.com/darksider4all/homelab-netatmo-integration",
+  "issue_tracker": "https://github.com/darksider4all/homelab-netatmo-integration/issues",
   "iot_class": "cloud_push",
   "requirements": [],
   "version": "1.0.0"

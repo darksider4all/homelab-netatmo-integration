@@ -1,5 +1,7 @@
 """Climate platform for Netatmo Custom integration."""
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature
@@ -280,7 +282,67 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             attrs["anticipating"] = status.get("anticipating", False)
             attrs["open_window"] = status.get("open_window", False)
 
+        # Add coordinator health info
+        if self.coordinator.data:
+            attrs["data_stale"] = self.coordinator.data.get("stale", False)
+            attrs["last_update_successful"] = self.coordinator.data.get("update_successful", True)
+            if self.coordinator.data.get("last_error"):
+                attrs["last_error"] = self.coordinator.data.get("last_error")
+
+        attrs["consecutive_failures"] = self.coordinator.consecutive_failures
+
         return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Consider unavailable if too many consecutive failures
+        if self.coordinator.consecutive_failures > 5:
+            return False
+        return super().available
+
+    async def _async_call_api_with_verification(
+        self,
+        api_call: Callable[[], Awaitable[Any]],
+        verification_func: Callable[[], bool],
+        description: str,
+        max_retries: int = 2,
+    ) -> bool:
+        """Call API and verify the change was applied.
+
+        Args:
+            api_call: Async function to call the API
+            verification_func: Sync function that returns True if change was applied
+            description: Description of the action for logging
+            max_retries: Maximum retry attempts
+
+        Returns:
+            True if change was verified, False otherwise
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                await api_call()
+                # Wait for state to propagate
+                await asyncio.sleep(2)
+                await self.coordinator.async_request_refresh()
+                await asyncio.sleep(1)
+
+                if verification_func():
+                    if attempt > 0:
+                        _LOGGER.info(f"{description} succeeded after {attempt + 1} attempts")
+                    return True
+                else:
+                    _LOGGER.warning(
+                        f"{description} not verified after attempt {attempt + 1}/{max_retries + 1}"
+                    )
+            except Exception as err:
+                _LOGGER.warning(f"{description} failed (attempt {attempt + 1}): {err}")
+
+            if attempt < max_retries:
+                await asyncio.sleep(3 * (attempt + 1))  # Increasing delay between retries
+
+        _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
+        return False
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
@@ -292,14 +354,23 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             DATA_API
         ]
 
-        try:
+        async def api_call():
             await api.async_set_room_thermpoint(
                 self._home_id, self._room_id, mode="manual", temp=temp
             )
-            # Request refresh to update state
+
+        def verify() -> bool:
+            current_temp = self.target_temperature
+            # Use TEMP_STEP as tolerance since that's the smallest increment
+            return current_temp is not None and abs(current_temp - temp) < TEMP_STEP
+
+        success = await self._async_call_api_with_verification(
+            api_call, verify, f"Set temperature to {temp}"
+        )
+
+        if not success:
+            # Force one more refresh attempt
             await self.coordinator.async_request_refresh()
-        except Exception as err:
-            _LOGGER.error(f"Failed to set temperature: {err}")
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
@@ -307,24 +378,25 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             DATA_API
         ]
 
-        try:
+        async def api_call():
             if hvac_mode == HVACMode.OFF:
                 await api.async_set_room_thermpoint(
                     self._home_id, self._room_id, mode="off"
                 )
             elif hvac_mode == HVACMode.HEAT:
-                # Set to manual mode with current target temp
                 target = self.target_temperature or 19.0
                 await api.async_set_room_thermpoint(
                     self._home_id, self._room_id, mode="manual", temp=target
                 )
             elif hvac_mode == HVACMode.AUTO:
-                # Set home to schedule mode
                 await api.async_set_therm_mode(self._home_id, mode="schedule")
 
-            await self.coordinator.async_request_refresh()
-        except Exception as err:
-            _LOGGER.error(f"Failed to set HVAC mode: {err}")
+        def verify() -> bool:
+            return self.hvac_mode == hvac_mode
+
+        await self._async_call_api_with_verification(
+            api_call, verify, f"Set HVAC mode to {hvac_mode}"
+        )
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set preset mode."""
@@ -344,16 +416,35 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if not netatmo_mode:
             return
 
-        try:
-            self._optimistic_preset = preset_mode
-            self.async_write_ha_state()
+        # Set optimistic state for immediate UI feedback
+        self._optimistic_preset = preset_mode
+        self.async_write_ha_state()
 
+        async def api_call():
             await api.async_set_therm_mode(self._home_id, mode=netatmo_mode)
 
-            self._optimistic_preset = None
-            await self.coordinator.async_request_refresh()
-        except Exception as err:
-            _LOGGER.error(f"Failed to set preset mode: {err}")
+        def verify() -> bool:
+            # Check actual state (not optimistic)
+            room_status = self._get_room_status()
+            if not room_status:
+                return False
+            actual_mode = room_status.get("therm_setpoint_mode")
+            if preset_mode == PRESET_FROST_GUARD:
+                return actual_mode in ("hg", "frost guard")
+            elif preset_mode in (PRESET_HOME, PRESET_NONE):
+                return actual_mode == "schedule"
+            elif preset_mode == PRESET_AWAY:
+                return actual_mode == "away"
+            return False
+
+        try:
+            success = await self._async_call_api_with_verification(
+                api_call, verify, f"Set preset to {preset_mode}"
+            )
+            if not success:
+                _LOGGER.error(f"Failed to verify preset change to {preset_mode}")
+        finally:
+            # Clear optimistic state regardless of outcome
             self._optimistic_preset = None
             self.async_write_ha_state()
 

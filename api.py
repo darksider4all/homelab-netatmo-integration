@@ -1,6 +1,8 @@
 """Netatmo API client for custom integration."""
+import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -17,6 +19,19 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_BACKOFF = 2  # seconds
+MAX_BACKOFF = 30  # seconds
+REQUEST_TIMEOUT = 30  # seconds
+
+# Rate limiting (Netatmo allows ~50 requests per 10 seconds)
+RATE_LIMIT_WINDOW = 10  # seconds
+RATE_LIMIT_MAX_REQUESTS = 40  # stay under limit
+
+# Netatmo error codes that are transient and worth retrying
+TRANSIENT_ERROR_CODES = {"9", "10", "26"}  # Device unreachable, internal error
+
 
 class NetatmoAPIError(Exception):
     """Base exception for Netatmo API errors."""
@@ -24,6 +39,14 @@ class NetatmoAPIError(Exception):
 
 class NetatmoAuthError(NetatmoAPIError):
     """Authentication error."""
+
+
+class NetatmoRateLimitError(NetatmoAPIError):
+    """Rate limit exceeded error."""
+
+
+class NetatmoTimeoutError(NetatmoAPIError):
+    """Request timeout error."""
 
 
 class NetatmoAPI:
@@ -40,16 +63,51 @@ class NetatmoAPI:
         self._oauth_session = oauth_session
         self._session = aiohttp_client.async_get_clientsession(hass)
         self._base_url = API_BASE_URL
+        self._request_timestamps: list[float] = []
+        self._consecutive_failures = 0
 
     async def async_get_access_token(self) -> str:
         """Get a valid access token, refreshing if necessary."""
         await self._oauth_session.async_ensure_token_valid()
         return self._oauth_session.token["access_token"]
 
+    async def _check_rate_limit(self) -> None:
+        """Check and enforce rate limiting."""
+        now = time.time()
+        # Remove timestamps outside the window
+        self._request_timestamps = [
+            ts for ts in self._request_timestamps
+            if now - ts < RATE_LIMIT_WINDOW
+        ]
+
+        if len(self._request_timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+            # Calculate wait time until oldest request exits the window
+            wait_time = RATE_LIMIT_WINDOW - (now - self._request_timestamps[0]) + 0.5
+            if wait_time > 0:
+                _LOGGER.warning(f"Rate limit approaching, waiting {wait_time:.1f}s")
+                await asyncio.sleep(wait_time)
+
+        self._request_timestamps.append(time.time())
+
+    async def _do_request(
+        self, method: str, endpoint: str, headers: dict, timeout: aiohttp.ClientTimeout, **kwargs
+    ) -> tuple[int, str, dict]:
+        """Execute a single HTTP request.
+
+        Returns:
+            Tuple of (status_code, response_text, response_headers)
+        """
+        url = f"{self._base_url}{endpoint}"
+        async with self._session.request(
+            method, url, headers=headers, timeout=timeout, **kwargs
+        ) as resp:
+            response_text = await resp.text()
+            return resp.status, response_text, dict(resp.headers)
+
     async def async_request(
         self, method: str, endpoint: str, **kwargs
     ) -> dict[str, Any]:
-        """Make authenticated API request.
+        """Make authenticated API request with retry logic.
 
         Args:
             method: HTTP method (GET, POST)
@@ -61,45 +119,127 @@ class NetatmoAPI:
 
         Raises:
             NetatmoAuthError: Authentication failed
-            NetatmoAPIError: API request failed
+            NetatmoAPIError: API request failed after retries
         """
-        # Get valid access token (refreshes automatically if expired)
-        try:
-            access_token = await self.async_get_access_token()
-        except Exception as err:
-            _LOGGER.error(f"Failed to get access token: {err}")
-            raise NetatmoAuthError(f"Failed to get access token: {err}")
+        # Extract custom headers if provided (preserve for potential retries)
+        custom_headers = kwargs.pop("headers", {})
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        last_error: Exception | None = None
 
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {access_token}"
-        url = f"{self._base_url}{endpoint}"
+        for attempt in range(MAX_RETRIES + 1):
+            # Enforce rate limiting
+            await self._check_rate_limit()
 
-        try:
-            async with self._session.request(
-                method, url, headers=headers, **kwargs
-            ) as resp:
-                response_text = await resp.text()
+            # Get valid access token (refreshes automatically if expired)
+            try:
+                access_token = await self.async_get_access_token()
+            except Exception as err:
+                _LOGGER.error(f"Failed to get access token: {err}")
+                raise NetatmoAuthError(f"Failed to get access token: {err}")
 
-                if resp.status == 401:
+            # Build headers for this request (fresh copy each attempt)
+            headers = {**custom_headers, "Authorization": f"Bearer {access_token}"}
+
+            try:
+                status, response_text, resp_headers = await self._do_request(
+                    method, endpoint, headers, timeout, **kwargs
+                )
+
+                # Handle authentication errors (no retry)
+                if status == 401:
+                    self._consecutive_failures += 1
                     raise NetatmoAuthError(f"Unauthorized - token may be invalid. Response: {response_text}")
-                elif resp.status == 403:
+                elif status == 403:
+                    self._consecutive_failures += 1
                     raise NetatmoAuthError(f"Forbidden - re-authentication required. Response: {response_text}")
 
-                resp.raise_for_status()
-                result = json.loads(response_text)
+                # Handle rate limiting (429)
+                if status == 429:
+                    # HTTP headers are case-insensitive, normalize lookup
+                    retry_after_str = resp_headers.get("Retry-After") or resp_headers.get("retry-after") or "60"
+                    retry_after = int(retry_after_str)
+                    _LOGGER.warning(f"Rate limited by Netatmo API, retry after {retry_after}s")
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(min(retry_after, MAX_BACKOFF))
+                        continue
+                    self._consecutive_failures += 1
+                    raise NetatmoRateLimitError(f"Rate limited after {MAX_RETRIES} retries")
+
+                # Handle server errors (5xx) with retry
+                if status >= 500:
+                    if attempt < MAX_RETRIES:
+                        backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                        _LOGGER.warning(f"Server error {status}, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(backoff)
+                        continue
+                    self._consecutive_failures += 1
+                    raise NetatmoAPIError(f"Server error {status} after {MAX_RETRIES} retries: {response_text}")
+
+                # Handle other client errors (4xx)
+                if status >= 400:
+                    self._consecutive_failures += 1
+                    raise NetatmoAPIError(f"Client error {status}: {response_text}")
+
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError as err:
+                    self._consecutive_failures += 1
+                    raise NetatmoAPIError(f"Invalid JSON response: {err}")
 
                 # Check Netatmo API status
                 if result.get("status") != "ok":
                     error_msg = result.get("error", {}).get("message", "Unknown error")
                     error_code = result.get("error", {}).get("code", "unknown")
+
+                    # Some errors are transient and worth retrying
+                    if str(error_code) in TRANSIENT_ERROR_CODES:
+                        if attempt < MAX_RETRIES:
+                            backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                            _LOGGER.warning(f"Netatmo error {error_code}, retrying in {backoff}s")
+                            await asyncio.sleep(backoff)
+                            continue
+
+                    self._consecutive_failures += 1
                     _LOGGER.error(f"Netatmo API error: {error_code} - {error_msg}")
                     raise NetatmoAPIError(f"API returned error: {error_code} - {error_msg}")
 
+                # Success - reset failure counter
+                self._consecutive_failures = 0
                 return result
 
-        except aiohttp.ClientError as err:
-            _LOGGER.error(f"API request failed: {err}")
-            raise NetatmoAPIError(f"API request failed: {err}")
+            except asyncio.TimeoutError as err:
+                last_error = err
+                if attempt < MAX_RETRIES:
+                    backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                    _LOGGER.warning(f"Request timeout, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(backoff)
+                    continue
+
+            except aiohttp.ClientError as err:
+                last_error = err
+                if attempt < MAX_RETRIES:
+                    backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                    _LOGGER.warning(f"Connection error: {err}, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(backoff)
+                    continue
+
+        # All retries exhausted
+        self._consecutive_failures += 1
+        if isinstance(last_error, asyncio.TimeoutError):
+            raise NetatmoTimeoutError(f"Request timed out after {MAX_RETRIES} retries")
+        elif last_error:
+            _LOGGER.error(f"API request failed after {MAX_RETRIES} retries: {last_error}")
+            raise NetatmoAPIError(f"API request failed: {last_error}")
+        raise NetatmoAPIError("Request failed for unknown reason")
+
+    @property
+    def consecutive_failures(self) -> int:
+        """Return count of consecutive API failures."""
+        return self._consecutive_failures
+
+    def reset_failure_count(self) -> None:
+        """Reset the consecutive failure counter."""
+        self._consecutive_failures = 0
 
     async def async_get_homes_data(self) -> dict[str, Any]:
         """Get home structure (rooms, devices, schedules).

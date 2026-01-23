@@ -1,6 +1,6 @@
 # Netatmo Custom Thermostat
 
-![Logo](logo.png)
+![Logo](custom_components/netatmo_custom/logo.png)
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 

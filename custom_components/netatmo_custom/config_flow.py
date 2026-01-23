@@ -74,10 +74,6 @@ class NetatmoOAuth2FlowHandler(
             _LOGGER.error(f"Authentication failed: {err}", exc_info=True)
             return self.async_abort(reason="auth_failed")
 
-        except Exception as err:
-            _LOGGER.error(f"Authentication failed: {err}", exc_info=True)
-            return self.async_abort(reason="auth_failed")
-
         # Store data for next step
         self.homes_data = homes
         self.auth_data = data

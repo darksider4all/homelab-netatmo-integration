@@ -125,8 +125,104 @@ async def async_setup_entry(
                 )
             )
 
+    # Environment sensors (Humidity, CO2)
+    for module in modules:
+        module_id = module.get("id")
+        module_type = module.get("type")
+        module_name = module_names.get(module_id, module_id)
+        
+        # Check available data keys
+        # Some modules might report these in dashboard_data or directly
+        # We'll check the module dict keys dynamically
+        
+        # Humidity
+        if "humidity" in module or module.get("dashboard_data", {}).get("Humidity") is not None:
+             entities.append(
+                NetatmoEnvironmentSensor(
+                    coordinator, module_id, module_name, module_type, home_id, "humidity"
+                )
+             )
+             
+        # CO2
+        if "co2" in module or module.get("dashboard_data", {}).get("CO2") is not None:
+             entities.append(
+                NetatmoEnvironmentSensor(
+                    coordinator, module_id, module_name, module_type, home_id, "co2"
+                )
+             )
+
     async_add_entities(entities)
     _LOGGER.info(f"Added {len(entities)} Netatmo sensors")
+
+
+class NetatmoEnvironmentSensor(CoordinatorEntity, SensorEntity):
+    """Environment sensor for Netatmo devices (CO2, Humidity)."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: NetatmoDataUpdateCoordinator,
+        module_id: str,
+        module_name: str,
+        module_type: str,
+        home_id: str,
+        sensor_type: str,  # "humidity" or "co2"
+    ):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._module_id = module_id
+        self._module_type = module_type
+        self._home_id = home_id
+        self._sensor_type = sensor_type
+
+        self._attr_unique_id = f"{ENTITY_PREFIX}_{home_id}_{module_id}_{sensor_type}"
+        self._attr_name = sensor_type.capitalize()
+        
+        if sensor_type == "humidity":
+            self._attr_device_class = SensorDeviceClass.HUMIDITY
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_icon = "mdi:water-percent"
+        elif sensor_type == "co2":
+            self._attr_device_class = SensorDeviceClass.CO2
+            self._attr_native_unit_of_measurement = "ppm"
+            self._attr_icon = "mdi:molecule-co2"
+
+        # Device info - links to parent device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, module_id)},
+            name=module_name,
+            manufacturer="Netatmo",
+            model=DEVICE_TYPES.get(module_type, module_type),
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        """Return sensor value."""
+        module = self._get_module()
+        if not module:
+            return None
+            
+        # Try direct key first
+        if self._sensor_type in module:
+            return module[self._sensor_type]
+            
+        # Try dashboard_data (common in Netatmo API for measurements)
+        dashboard_data = module.get("dashboard_data", {})
+        key_map = {
+            "humidity": "Humidity",
+            "co2": "CO2"
+        }
+        return dashboard_data.get(key_map.get(self._sensor_type))
+
+    def _get_module(self) -> dict | None:
+        """Get module data from coordinator."""
+        home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
+        for module in home_status.get("modules", []):
+            if module.get("id") == self._module_id:
+                return module
+        return None
 
 
 class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):

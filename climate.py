@@ -240,11 +240,24 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             return HVACAction.OFF
 
         # Check if currently heating
+        # Netatmo returns heating_power_request as percentage (0-100)
+        # If > 0, the valve is open and boiler is likely firing (or requested to)
         heating_power = status.get("heating_power_request", 0)
+        
+        # Also check boiler status if available (global for home)
+        boiler_status = False
+        home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
+        for module in home_status.get("modules", []):
+             if module.get("type") in ["NATherm1", "OTH", "OTM"]:
+                 if module.get("boiler_status") is True:
+                     boiler_status = True
+                     break
+        
+        # If we have a specific power request > 0, we report HEATING
         if heating_power > 0:
             return HVACAction.HEATING
-        else:
-            return HVACAction.IDLE
+        
+        return HVACAction.IDLE
 
     @property
     def preset_mode(self) -> str:

@@ -67,20 +67,70 @@ class NetatmoOAuth2FlowHandler(
                 _LOGGER.error("No homes found in Netatmo account")
                 return self.async_abort(reason="no_thermostats_found")
 
-            home = homes[0]  # Use first home
-            home_id = home["id"]
-            home_name = home.get("name", "Netatmo Home")
-            _LOGGER.info(f"Found Netatmo home: {home_name} (ID: {home_id})")
+            # Homes found - proceed to selection
+            _LOGGER.info(f"Found {len(homes)} homes in Netatmo account")
 
         except Exception as err:
             _LOGGER.error(f"Authentication failed: {err}", exc_info=True)
             return self.async_abort(reason="auth_failed")
 
+        except Exception as err:
+            _LOGGER.error(f"Authentication failed: {err}", exc_info=True)
+            return self.async_abort(reason="auth_failed")
+
+        # Store data for next step
+        self.homes_data = homes
+        self.auth_data = data
+        
+        # If only one home, proceed immediately
+        if len(homes) == 1:
+            return await self.async_create_entry_for_home(homes[0])
+            
+        # Multiple homes found, show selection step
+        return await self.async_step_home_select()
+
+    async def async_step_home_select(self, user_input: dict | None = None) -> dict:
+        """Handle home selection step."""
+        if user_input:
+            home_id = user_input["home"]
+            # Find selected home object
+            selected_home = next((h for h in self.homes_data if h["id"] == home_id), None)
+            if selected_home:
+                return await self.async_create_entry_for_home(selected_home)
+        
+        # Prepare options
+        options = {
+            home["id"]: f"{home.get('name', 'Unknown')} ({home['id']})" 
+            for home in self.homes_data
+        }
+        
+        import voluptuous as vol
+        
+        return self.async_show_form(
+            step_id="home_select",
+            data_schema=vol.Schema({
+                vol.Required("home"): vol.In(options)
+            }),
+            description_placeholders={
+                "count": str(len(self.homes_data))
+            }
+        )
+
+    async def async_create_entry_for_home(self, home: dict) -> dict:
+        """Create the config entry for a specific home."""
+        home_id = home["id"]
+        home_name = home.get("name", "Netatmo Home")
+        
         # Generate webhook ID for this config entry
         webhook_id = secrets.token_hex(32)
-        data[CONF_WEBHOOK_ID] = webhook_id
-
-        # Set unique ID based on home ID to prevent duplicates
+        
+        # Create final data dict
+        data = {
+            **self.auth_data,
+            CONF_WEBHOOK_ID: webhook_id
+        }
+        
+        # Set unique ID based on home ID
         await self.async_set_unique_id(f"{DOMAIN}_{home_id}")
         self._abort_if_unique_id_configured()
 

@@ -24,7 +24,7 @@
             "state": {
               "home": "Home",
               "away": "Away",
-              "Frost Guard": "Frost Guard",
+              "frost_guard": "Frost Guard",
               "none": "None"
             }
           }

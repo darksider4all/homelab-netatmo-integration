@@ -121,7 +121,6 @@ PRESET_MODE_ICONS = {
     PRESET_AWAY: "mdi:home-export-outline",
     PRESET_FROST_GUARD: "mdi:snowflake-thermometer",
     PRESET_NONE: "mdi:thermostat",
-    "Frost Guard": "mdi:snowflake-thermometer",  # Also handle string directly
 }
 
 

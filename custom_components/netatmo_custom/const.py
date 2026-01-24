@@ -29,7 +29,7 @@ DATA_HOME_ID = "home_id"
 CONF_WEBHOOK_ID = "webhook_id"
 
 # Preset modes (extending HA's built-in presets)
-PRESET_FROST_GUARD = "Frost Guard"
+PRESET_FROST_GUARD = "frost_guard"
 PRESET_SCHEDULE = "schedule"
 PRESET_MANUAL = "manual"
 
@@ -45,7 +45,7 @@ NETATMO_ROOM_MODES = {
 NETATMO_HOME_MODES = {
     "schedule": "Schedule",
     "away": "Away",
-    "hg": "Frost Guard",
+    "hg": "frost_guard",
     "off": "Off",
 }
 

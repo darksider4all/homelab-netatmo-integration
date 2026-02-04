@@ -70,14 +70,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         webhook_id = entry.data.get(CONF_WEBHOOK_ID)
         if webhook_id:
             webhook_url = await async_setup_webhook(hass, webhook_id, coordinator)
-            _LOGGER.warning(
-                f"\n{'='*80}\n"
-                f"HOMELAB CLIMATE - WEBHOOK SETUP\n"
-                f"{'='*80}\n"
-                f"Copy this URL to dev.netatmo.com > App Settings > Webhook URI:\n\n"
-                f"  {webhook_url}\n\n"
-                f"{'='*80}\n"
-            )
+            if webhook_url:
+                _LOGGER.info(
+                    "Netatmo webhook registered. "
+                    "Webhook URL for dev.netatmo.com: %s",
+                    webhook_url,
+                )
 
         # Forward setup to platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

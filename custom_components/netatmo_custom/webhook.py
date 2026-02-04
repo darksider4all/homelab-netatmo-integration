@@ -4,6 +4,7 @@ import logging
 from aiohttp import web
 from homeassistant.components.webhook import async_register, async_unregister
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.network import get_url, NoURLAvailableError
 
 from .const import DOMAIN
 from .coordinator import NetatmoDataUpdateCoordinator
@@ -81,13 +82,15 @@ async def async_setup_webhook(
     )
 
     # Return webhook URL for registration with Netatmo
-    external_url = hass.config.external_url
-    if not external_url:
+    try:
+        external_url = get_url(hass, allow_internal=False, prefer_external=True)
+    except NoURLAvailableError:
         _LOGGER.warning(
-            "No external_url configured in Home Assistant. "
-            "Webhook will not work until external_url is set."
+            "No external URL available in Home Assistant. "
+            "Configure an external URL in Settings > System > Network "
+            "for webhooks to work."
         )
-        external_url = "http://YOUR_HA_URL"
+        return None
 
     webhook_url = f"{external_url}/api/webhook/{webhook_id}"
     return webhook_url

@@ -318,7 +318,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         api_call: Callable[[], Awaitable[Any]],
         verification_func: Callable[[], bool],
         description: str,
-        max_retries: int = 2,
+        max_retries: int = 4,
     ) -> bool:
         """Call API and verify the change was applied.
 
@@ -334,8 +334,8 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         for attempt in range(max_retries + 1):
             try:
                 await api_call()
-                # Wait for state to propagate
-                await asyncio.sleep(2)
+                # Wait for state to propagate (Netatmo can be slow to apply setpoints)
+                await asyncio.sleep(4)
                 await self.coordinator.async_request_refresh()
                 await asyncio.sleep(1)
 
@@ -351,7 +351,10 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
                 _LOGGER.warning(f"{description} failed (attempt {attempt + 1}): {err}")
 
             if attempt < max_retries:
-                await asyncio.sleep(3 * (attempt + 1))  # Increasing delay between retries
+                # Increasing delay between retries
+                delay = 4 * (attempt + 1)
+                _LOGGER.info(f"Retrying {description} in {delay}s...")
+                await asyncio.sleep(delay)
 
         _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
         return False

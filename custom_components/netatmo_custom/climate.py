@@ -401,7 +401,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
                     self._home_id, self._room_id, mode="manual", temp=target
                 )
             elif hvac_mode == HVACMode.AUTO:
-                await api.async_set_therm_mode(self._home_id, mode="schedule")
+                await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="home")
 
         def verify() -> bool:
             return self.hvac_mode == hvac_mode

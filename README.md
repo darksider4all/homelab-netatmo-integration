@@ -28,7 +28,7 @@ Custom Home Assistant integration for Netatmo Thermostats with enhanced local po
 
 1. Download the latest release.
 2. Copy the contents of the repository into your Home Assistant `custom_components/netatmo_custom` directory.
-   - Note: Since this repository uses `content_in_root`, you should copy all files (except `.git`, `.github`) into `custom_components/netatmo_custom`.
+   - Note: You should copy all the internal files (except `.git`, `.github`) into `custom_components/netatmo_custom`.
 3. Restart Home Assistant.
 
 ## Configuration

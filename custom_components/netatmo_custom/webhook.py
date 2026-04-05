@@ -1,4 +1,6 @@
 """Webhook handler for Netatmo Custom integration."""
+import hashlib
+import hmac
 import logging
 
 from aiohttp import web
@@ -13,7 +15,10 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_webhook(
-    hass: HomeAssistant, webhook_id: str, coordinator: NetatmoDataUpdateCoordinator
+    hass: HomeAssistant,
+    webhook_id: str,
+    coordinator: NetatmoDataUpdateCoordinator,
+    client_secret: str | None = None,
 ) -> str:
     """Register webhook handler.
 
@@ -44,12 +49,22 @@ async def async_setup_webhook(
             signature = request.headers.get("X-Netatmo-Secret")
 
             # Get request body
-            body = await request.text()
+            body_bytes = await request.read()
+            body = body_bytes.decode("utf-8")
 
-            # TODO: Verify signature using HMAC SHA256 with client secret
-            # For now, just log the signature
-            if signature:
-                _LOGGER.debug(f"Webhook signature: {signature}")
+            # Verify signature using HMAC SHA256 with client secret
+            if signature and client_secret:
+                expected_signature = hmac.new(
+                    client_secret.encode("utf-8"),
+                    body_bytes,
+                    hashlib.sha256
+                ).hexdigest()
+
+                if not hmac.compare_digest(expected_signature, signature):
+                    _LOGGER.warning("Invalid webhook signature received")
+                    return web.Response(status=403, text="Invalid signature")
+            elif not signature:
+                _LOGGER.warning("Webhook request missing signature")
 
             # Parse webhook data
             try:

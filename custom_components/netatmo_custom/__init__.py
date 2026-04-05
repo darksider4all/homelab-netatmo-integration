@@ -67,7 +67,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Setup webhook if webhook_id exists
         webhook_id = entry.data.get(CONF_WEBHOOK_ID)
         if webhook_id:
-            webhook_url = await async_setup_webhook(hass, webhook_id, coordinator)
+            client_secret = getattr(implementation, "client_secret", None)
+            webhook_url = await async_setup_webhook(hass, webhook_id, coordinator, client_secret)
             if webhook_url:
                 _LOGGER.info(
                     "Netatmo webhook registered. "

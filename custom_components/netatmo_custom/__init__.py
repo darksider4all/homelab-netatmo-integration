@@ -56,6 +56,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()
 
+        # Pre-register relay devices in the device registry so via_device references don't issue warnings
+        from homeassistant.helpers import device_registry as dr
+        device_registry = dr.async_get(hass)
+        homes_data = coordinator.data.get("homes_data", {}).get("body", {}).get("homes", [])
+        for home in homes_data:
+            if home["id"] == home_id:
+                for module in home.get("modules", []):
+                    if module.get("type") == "NAPlug":
+                        device_registry.async_get_or_create(
+                            config_entry_id=entry.entry_id,
+                            identifiers={(DOMAIN, module["id"])},
+                            manufacturer="Netatmo",
+                            model="Relay",
+                            name=module.get("name", "Netatmo Relay"),
+                            configuration_url="https://my.netatmo.com",
+                        )
+                break
+
         # Store coordinator and API in hass.data
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {

@@ -76,6 +76,13 @@ async def async_setup_entry(
     # Build module lookup by ID
     module_lookup = {m["id"]: m for m in modules}
 
+    # Find the NAPlug relay module ID
+    relay_module_id = None
+    for m in modules:
+        if m.get("type") == "NAPlug":
+            relay_module_id = m["id"]
+            break
+
     # Create climate entity for each room with thermostat
     entities = []
     for room in rooms:
@@ -92,7 +99,7 @@ async def async_setup_entry(
                     break
 
             entities.append(
-                NetatmoThermostat(coordinator, room, home_id, home_name, thermostat_module)
+                NetatmoThermostat(coordinator, room, home_id, home_name, thermostat_module, relay_module_id)
             )
 
     async_add_entities(entities)
@@ -141,6 +148,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         home_id: str,
         home_name: str,
         module: dict | None,
+        relay_module_id: str | None = None,
     ):
         """Initialize the thermostat.
 
@@ -156,6 +164,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         self._home_id = home_id
         self._room_id = room["id"]
         self._module = module
+        self._relay_module_id = relay_module_id
         self._optimistic_preset = None  # For immediate UI updates
 
         # Get module info
@@ -174,7 +183,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             name=module_name,
             manufacturer="Netatmo",
             model=DEVICE_TYPES.get(module_type, module_type),
-            via_device=(DOMAIN, f"{home_id}_relay") if module_type != "NAPlug" else None,
+            via_device=(DOMAIN, relay_module_id) if module_type != "NAPlug" and relay_module_id else None,
             configuration_url="https://my.netatmo.com",
         )
 
@@ -318,7 +327,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         api_call: Callable[[], Awaitable[Any]],
         verification_func: Callable[[], bool],
         description: str,
-        max_retries: int = 2,
+        max_retries: int = 4,
     ) -> bool:
         """Call API and verify the change was applied.
 
@@ -334,8 +343,8 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         for attempt in range(max_retries + 1):
             try:
                 await api_call()
-                # Wait for state to propagate
-                await asyncio.sleep(2)
+                # Wait for state to propagate (Netatmo can be slow to apply setpoints)
+                await asyncio.sleep(4)
                 await self.coordinator.async_request_refresh()
                 await asyncio.sleep(1)
 
@@ -351,7 +360,10 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
                 _LOGGER.warning(f"{description} failed (attempt {attempt + 1}): {err}")
 
             if attempt < max_retries:
-                await asyncio.sleep(3 * (attempt + 1))  # Increasing delay between retries
+                # Increasing delay between retries
+                delay = 4 * (attempt + 1)
+                _LOGGER.info(f"Retrying {description} in {delay}s...")
+                await asyncio.sleep(delay)
 
         _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
         return False
@@ -401,7 +413,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
                     self._home_id, self._room_id, mode="manual", temp=target
                 )
             elif hvac_mode == HVACMode.AUTO:
-                await api.async_set_therm_mode(self._home_id, mode="schedule")
+                await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="home")
 
         def verify() -> bool:
             return self.hvac_mode == hvac_mode

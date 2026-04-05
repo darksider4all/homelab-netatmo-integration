@@ -8,6 +8,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 
 from .api import NetatmoAPI, NetatmoAuthError
 from .const import (
+    CONF_HOME_ID,
     CONF_WEBHOOK_ID,
     DATA_API,
     DATA_COORDINATOR,
@@ -42,14 +43,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Initialize API client with OAuth session (handles token refresh)
         api = NetatmoAPI(hass, oauth_session)
 
-        # Get home ID from homesdata
-        homes_data = await api.async_get_homes_data()
-        homes = homes_data.get("body", {}).get("homes", [])
+        # Get home ID stored during config flow
+        home_id = entry.data.get(CONF_HOME_ID)
+        if not home_id:
+            raise ConfigEntryAuthFailed("No home ID in config entry — please re-add the integration")
 
-        if not homes:
-            raise ConfigEntryAuthFailed("No homes found in Netatmo account")
-
-        home_id = homes[0]["id"]
         _LOGGER.info(f"Setting up Homelab Climate for home: {home_id}")
 
         # Setup coordinator for polling

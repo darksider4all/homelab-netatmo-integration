@@ -4,7 +4,7 @@ import secrets
 
 from homeassistant.helpers import config_entry_oauth2_flow, aiohttp_client
 
-from .const import API_BASE_URL, CONF_WEBHOOK_ID, DOMAIN, OAUTH2_SCOPES
+from .const import API_BASE_URL, CONF_HOME_ID, CONF_WEBHOOK_ID, DOMAIN, OAUTH2_SCOPES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,11 +119,12 @@ class NetatmoOAuth2FlowHandler(
         
         # Generate webhook ID for this config entry
         webhook_id = secrets.token_hex(32)
-        
+
         # Create final data dict
         data = {
             **self.auth_data,
-            CONF_WEBHOOK_ID: webhook_id
+            CONF_WEBHOOK_ID: webhook_id,
+            CONF_HOME_ID: home_id,
         }
         
         # Set unique ID based on home ID

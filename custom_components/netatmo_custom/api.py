@@ -30,7 +30,7 @@ RATE_LIMIT_WINDOW = 10  # seconds
 RATE_LIMIT_MAX_REQUESTS = 40  # stay under limit
 
 # Netatmo error codes that are transient and worth retrying
-TRANSIENT_ERROR_CODES = {"9", "10", "26"}  # Device unreachable, internal error
+TRANSIENT_ERROR_CODES = {"9", "10", "13", "26"}  # 13 = Couldn't apply setpoint, Device unreachable, internal error
 
 
 class NetatmoAPIError(Exception):
@@ -150,6 +150,19 @@ class NetatmoAPI:
                     self._consecutive_failures += 1
                     raise NetatmoAuthError(f"Unauthorized - token may be invalid. Response: {response_text}")
                 elif status == 403:
+                    # Look at response text to see if it's transient
+                    try:
+                        err_res = json.loads(response_text)
+                        err_code = err_res.get("error", {}).get("code")
+                        if str(err_code) in TRANSIENT_ERROR_CODES:
+                            if attempt < MAX_RETRIES:
+                                backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                                _LOGGER.warning(f"Transient Netatmo error 403 (code {err_code}), retrying in {backoff}s")
+                                await asyncio.sleep(backoff)
+                                continue
+                    except json.JSONDecodeError:
+                        pass
+                    
                     self._consecutive_failures += 1
                     raise NetatmoAuthError(f"Forbidden - re-authentication required. Response: {response_text}")
 

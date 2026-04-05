@@ -27,6 +27,7 @@ DATA_HOME_ID = "home_id"
 
 # Configuration keys
 CONF_WEBHOOK_ID = "webhook_id"
+CONF_HOME_ID = "home_id"
 
 # Preset modes (extending HA's built-in presets)
 PRESET_FROST_GUARD = "frost_guard"

@@ -3,6 +3,13 @@
     "step": {
       "pick_implementation": {
         "title": "Connect to Homelab Climate"
+      },
+      "home_select": {
+        "title": "Select Home",
+        "description": "Found {count} homes in your Netatmo account. Please select which one to use.",
+        "data": {
+          "home": "Home"
+        }
       }
     },
     "abort": {

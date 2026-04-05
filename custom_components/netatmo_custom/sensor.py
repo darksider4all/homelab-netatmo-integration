@@ -73,6 +73,13 @@ async def async_setup_entry(
                 module_names[module["id"]] = module.get("name", module["id"])
             break
 
+    # Find the NAPlug relay module ID
+    relay_module_id = None
+    for m in modules:
+        if m.get("type") == "NAPlug":
+            relay_module_id = m.get("id")
+            break
+
     # Create battery sensors for each module with battery
     for module in modules:
         module_id = module.get("id")
@@ -89,7 +96,7 @@ async def async_setup_entry(
             # Battery level sensor
             entities.append(
                 NetatmoBatteryLevelSensor(
-                    coordinator, module_id, module_name, module_type, home_id
+                    coordinator, module_id, module_name, module_type, home_id, relay_module_id
                 )
             )
 
@@ -241,6 +248,7 @@ class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
         module_name: str,
         module_type: str,
         home_id: str,
+        relay_module_id: str | None = None,
     ):
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -257,7 +265,7 @@ class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
             name=module_name,
             manufacturer="Netatmo",
             model=DEVICE_TYPES.get(module_type, module_type),
-            via_device=(DOMAIN, f"{home_id}_relay") if module_type != "NAPlug" else None,
+            via_device=(DOMAIN, relay_module_id) if module_type != "NAPlug" and relay_module_id else None,
         )
 
     @property

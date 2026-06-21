@@ -1,0 +1,7 @@
+# Development & test dependencies for the Netatmo Custom integration.
+# Install with: pip install -r requirements-test.txt
+ruff==0.6.9
+mypy==1.11.2
+pytest-homeassistant-custom-component==0.13.171
+# acme/hass_nabucasa (pulled in by homeassistant) need josepy<2 (ComparableX509).
+josepy<2

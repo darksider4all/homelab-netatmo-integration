@@ -1,0 +1,57 @@
+[project]
+name = "netatmo_custom"
+version = "1.2.0"
+description = "Home Assistant custom integration for Netatmo thermostats (cloud_push, webhook-driven)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["custom_components"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "B008",   # function calls in defaults (vol schemas use this idiom)
+    "RUF012", # mutable class attributes (HA entity description pattern)
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # asserts are expected in tests
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = false
+check_untyped_defs = true
+# via_device accepts None at runtime but HA's DeviceInfo TypedDict types it as a
+# bare tuple, producing false positives — suppress that one code globally.
+disable_error_code = ["import-untyped", "typeddict-item"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--cov=custom_components.netatmo_custom --cov-report=term-missing"

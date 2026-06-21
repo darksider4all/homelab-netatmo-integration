@@ -5,8 +5,9 @@
   "config_flow": true,
   "dependencies": ["application_credentials", "webhook"],
   "documentation": "https://github.com/darksider4all/homelab-netatmo-integration",
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/darksider4all/homelab-netatmo-integration/issues",
   "requirements": [],
-  "version": "1.1.1"
+  "version": "1.2.0"
 }

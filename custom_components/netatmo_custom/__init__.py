@@ -1,12 +1,20 @@
 """Netatmo Custom Thermostat integration."""
+
+import contextlib
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import device_registry as dr
 
-from .api import NetatmoAPI, NetatmoAuthError
+from .api import NetatmoAPI, NetatmoAPIError, NetatmoAuthError
 from .const import (
     CONF_HOME_ID,
     CONF_WEBHOOK_ID,
@@ -46,9 +54,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Get home ID stored during config flow
         home_id = entry.data.get(CONF_HOME_ID)
         if not home_id:
-            raise ConfigEntryAuthFailed("No home ID in config entry — please re-add the integration")
+            raise ConfigEntryAuthFailed(
+                "No home ID in config entry — please re-add the integration"
+            )
 
-        _LOGGER.info(f"Setting up Homelab Climate for home: {home_id}")
+        _LOGGER.info("Setting up Homelab Climate integration")
+        _LOGGER.debug("Configured home id: %s", home_id)
 
         # Setup coordinator for polling
         coordinator = NetatmoDataUpdateCoordinator(hass, api, home_id)
@@ -56,8 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()
 
-        # Pre-register relay devices in the device registry so via_device references don't issue warnings
-        from homeassistant.helpers import device_registry as dr
+        # Pre-register relay devices so via_device references don't warn.
         device_registry = dr.async_get(hass)
         homes_data = coordinator.data.get("homes_data", {}).get("body", {}).get("homes", [])
         for home in homes_data:
@@ -89,8 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             webhook_url = await async_setup_webhook(hass, webhook_id, coordinator, client_secret)
             if webhook_url:
                 _LOGGER.info(
-                    "Netatmo webhook registered. "
-                    "Webhook URL for dev.netatmo.com: %s",
+                    "Netatmo webhook registered. " "Webhook URL for dev.netatmo.com: %s",
                     webhook_url,
                 )
 
@@ -102,12 +111,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return True
 
+    except (ConfigEntryAuthFailed, ConfigEntryNotReady):
+        # Let Home Assistant handle reauth / retry signalling.
+        raise
     except NetatmoAuthError as err:
-        _LOGGER.error(f"Authentication error during setup: {err}")
-        raise ConfigEntryAuthFailed(err)
+        _LOGGER.error("Authentication error during setup: %s", err)
+        raise ConfigEntryAuthFailed(str(err)) from err
     except Exception as err:
-        _LOGGER.error(f"Error setting up Netatmo Custom: {err}")
-        return False
+        # Treat unexpected setup failures as transient so HA retries instead of
+        # silently disabling the entry.
+        _LOGGER.exception("Error setting up Netatmo Custom")
+        raise ConfigEntryNotReady(f"Error setting up Netatmo Custom: {err}") from err
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -139,6 +153,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate an old config entry to the current schema.
+
+    There is only one schema version today; this hook is in place so future
+    breaking data changes can be migrated without orphaning existing entries.
+    """
+    if entry.version == 1:
+        return True
+
+    # Unknown (newer) version — refuse rather than corrupt data.
+    _LOGGER.error("Cannot downgrade config entry from version %s", entry.version)
+    return False
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clean up when a config entry is removed.
+
+    Platforms and the webhook are already torn down in async_unload_entry; this
+    ensures the webhook registration is gone even if the entry is removed while
+    not loaded.
+    """
+    webhook_id = entry.data.get(CONF_WEBHOOK_ID)
+    if webhook_id:
+        # May already be unregistered if the entry was loaded.
+        with contextlib.suppress(ValueError, KeyError):
+            async_unregister_webhook(hass, webhook_id)
+
+
 async def async_setup_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Set up services for Netatmo Custom integration.
 
@@ -147,58 +189,46 @@ async def async_setup_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         entry: Config entry
     """
 
-    async def async_handle_set_schedule(call):
+    async def async_handle_set_schedule(call: ServiceCall) -> None:
         """Handle set_schedule service call."""
         entity_id = call.data.get("entity_id")
         schedule_name = call.data.get("schedule_name")
 
         if not entity_id or not schedule_name:
-            _LOGGER.error("Missing required service parameters")
-            return
+            raise ServiceValidationError("Both 'entity_id' and 'schedule_name' are required")
 
         # Get API and home_id from hass.data
         entry_data = hass.data[DOMAIN].get(entry.entry_id)
         if not entry_data:
-            _LOGGER.error("Integration data not found")
-            return
+            raise HomeAssistantError("Netatmo integration data not found")
 
         api: NetatmoAPI = entry_data[DATA_API]
         home_id: str = entry_data[DATA_HOME_ID]
         coordinator: NetatmoDataUpdateCoordinator = entry_data[DATA_COORDINATOR]
 
         try:
-            # Get schedules
             schedules = await api.async_get_schedules(home_id)
+        except NetatmoAPIError as err:
+            raise HomeAssistantError(f"Could not fetch Netatmo schedules: {err}") from err
 
-            # Find schedule by name
-            schedule_id = None
-            for schedule in schedules:
-                if schedule.get("name") == schedule_name:
-                    schedule_id = schedule["id"]
-                    break
+        # Find schedule by name
+        schedule_id = next((s["id"] for s in schedules if s.get("name") == schedule_name), None)
 
-            if schedule_id is None:
-                _LOGGER.error(
-                    f"Schedule '{schedule_name}' not found. Available schedules: "
-                    f"{[s.get('name') for s in schedules]}"
-                )
-                return
-
-            # Set schedule
-            await api.async_set_therm_mode(
-                home_id, mode="schedule", schedule_id=schedule_id
+        if schedule_id is None:
+            available = ", ".join(sorted(s.get("name", "?") for s in schedules))
+            raise ServiceValidationError(
+                f"Schedule '{schedule_name}' not found. Available schedules: {available}"
             )
 
-            # Refresh coordinator
-            await coordinator.async_request_refresh()
+        try:
+            await api.async_set_therm_mode(home_id, mode="schedule", schedule_id=schedule_id)
+        except NetatmoAPIError as err:
+            raise HomeAssistantError(f"Failed to set schedule: {err}") from err
 
-            _LOGGER.info(f"Set schedule to '{schedule_name}' (ID: {schedule_id})")
-
-        except Exception as err:
-            _LOGGER.error(f"Error setting schedule: {err}")
+        # Refresh coordinator
+        await coordinator.async_request_refresh()
+        _LOGGER.info("Set schedule to '%s'", schedule_name)
 
     # Register service
     if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
-        hass.services.async_register(
-            DOMAIN, SERVICE_SET_SCHEDULE, async_handle_set_schedule
-        )
+        hass.services.async_register(DOMAIN, SERVICE_SET_SCHEDULE, async_handle_set_schedule)

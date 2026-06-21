@@ -1,14 +1,16 @@
 """Webhook handler for Netatmo Custom integration."""
+
 import hashlib
 import hmac
+import json
 import logging
 
 from aiohttp import web
 from homeassistant.components.webhook import async_register, async_unregister
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.network import get_url, NoURLAvailableError
+from homeassistant.helpers.network import NoURLAvailableError, get_url
 
-from .const import DOMAIN
+from .const import DOMAIN, MAX_WEBHOOK_BODY_BYTES
 from .coordinator import NetatmoDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ async def async_setup_webhook(
     webhook_id: str,
     coordinator: NetatmoDataUpdateCoordinator,
     client_secret: str | None = None,
-) -> str:
+) -> str | None:
     """Register webhook handler.
 
     Args:
@@ -45,46 +47,49 @@ async def async_setup_webhook(
             HTTP response
         """
         try:
-            # Get webhook signature header (Netatmo sends X-Netatmo-Secret)
-            signature = request.headers.get("X-Netatmo-Secret")
-
-            # Get request body
+            # Read the body and reject oversized payloads early (DoS guard).
             body_bytes = await request.read()
-            body = body_bytes.decode("utf-8")
+            if len(body_bytes) > MAX_WEBHOOK_BODY_BYTES:
+                _LOGGER.warning("Rejecting oversized webhook payload (%d bytes)", len(body_bytes))
+                return web.Response(status=413, text="Payload too large")
 
-            # Verify signature using HMAC SHA256 with client secret
+            # Verify signature using HMAC SHA256 over the raw body, when both the
+            # X-Netatmo-Secret header and a client secret are available. We do NOT
+            # reject unsigned requests (they only trigger an authenticated API
+            # refresh, never state injection) but we do reject bad signatures.
+            signature = request.headers.get("X-Netatmo-Secret")
             if signature and client_secret:
                 expected_signature = hmac.new(
                     client_secret.encode("utf-8"),
                     body_bytes,
-                    hashlib.sha256
+                    hashlib.sha256,
                 ).hexdigest()
-
                 if not hmac.compare_digest(expected_signature, signature):
                     _LOGGER.warning("Invalid webhook signature received")
                     return web.Response(status=403, text="Invalid signature")
-            elif not signature:
-                _LOGGER.warning("Webhook request missing signature")
+            elif not client_secret:
+                _LOGGER.debug("No client secret available; skipping signature check")
+            else:
+                _LOGGER.debug("Webhook request missing signature header")
 
-            # Parse webhook data
+            # Parse the body without ever logging its contents.
             try:
-                data = await request.json()
-            except Exception:
-                # If JSON parsing fails, log raw body
-                _LOGGER.warning(f"Failed to parse webhook JSON. Body: {body}")
-                data = {"raw_body": body}
+                data = json.loads(body_bytes.decode("utf-8", errors="replace"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                _LOGGER.warning("Failed to parse webhook JSON (%d bytes)", len(body_bytes))
+                data = {}
 
-            _LOGGER.info(f"Webhook received: {data.get('event_type', 'unknown')}")
+            _LOGGER.debug("Webhook received: %s", data.get("push_type", "unknown"))
 
-            # Update coordinator immediately
+            # Trigger an authoritative refresh from the API.
             await coordinator.async_handle_webhook(data)
 
-            # Respond with 200 OK (Netatmo requires response within 14 seconds)
+            # Respond 200 OK (Netatmo requires a response within 14 seconds).
             return web.Response(status=200, text="OK")
 
-        except Exception as err:
-            _LOGGER.error(f"Webhook error: {err}", exc_info=True)
-            # Still return 200 to avoid being banned by Netatmo
+        except Exception:
+            # Still return 200 to avoid being throttled/banned by Netatmo.
+            _LOGGER.exception("Unexpected error handling Netatmo webhook")
             return web.Response(status=200, text="Error processed")
 
     # Register webhook with Home Assistant

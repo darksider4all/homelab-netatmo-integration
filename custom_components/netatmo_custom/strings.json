@@ -10,6 +10,10 @@
         "data": {
           "home": "Home"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Homelab Climate",
+        "description": "The Netatmo integration needs to re-authenticate your account. Select Submit to continue."
       }
     },
     "abort": {
@@ -17,6 +21,7 @@
       "no_thermostats_found": "No thermostats found in your Netatmo account",
       "auth_failed": "Authentication failed. Please try again.",
       "oauth_error": "OAuth authentication error",
+      "reauth_successful": "Re-authentication was successful",
       "unknown": "Unexpected error occurred"
     },
     "create_entry": {
@@ -53,6 +58,11 @@
           "description": "Name of the schedule to activate"
         }
       }
+    }
+  },
+  "system_health": {
+    "info": {
+      "can_reach_server": "Reach Netatmo API"
     }
   }
 }

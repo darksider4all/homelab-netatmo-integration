@@ -31,7 +31,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        # The pinned test stack (pytest-homeassistant-custom-component -> HA 2024.10.0)
+        # depends on home-assistant-bluetooth==1.12.2, which is capped at Python <3.13.
+        # That HA release only supports 3.12, so we test on the Python it actually runs on.
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

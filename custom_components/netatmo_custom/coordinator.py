@@ -1,10 +1,12 @@
 """Data update coordinator for Netatmo Custom integration."""
+
+from datetime import timedelta
 import logging
 import time
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import NetatmoAPI, NetatmoAPIError, NetatmoAuthError
@@ -65,6 +67,7 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
         Args:
             success: Whether the last update was successful
         """
+        new_interval: float
         if success:
             # Successful update - reset to base interval
             self._consecutive_update_failures = 0
@@ -73,10 +76,7 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             # Failed update - exponential backoff
             self._consecutive_update_failures += 1
             backoff_factor = FAILURE_BACKOFF_MULTIPLIER ** min(self._consecutive_update_failures, 5)
-            new_interval = min(
-                self._base_update_interval * backoff_factor,
-                MAX_UPDATE_INTERVAL
-            )
+            new_interval = min(self._base_update_interval * backoff_factor, MAX_UPDATE_INTERVAL)
             _LOGGER.warning(
                 f"Update failed ({self._consecutive_update_failures} consecutive). "
                 f"Adjusting poll interval to {new_interval:.0f}s"
@@ -105,7 +105,9 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Log recovery if we had coordinator-level failures
             if previous_failures > 0:
-                _LOGGER.info(f"Netatmo coordinator recovered after {previous_failures} consecutive failures")
+                _LOGGER.info(
+                    f"Netatmo coordinator recovered after {previous_failures} consecutive failures"
+                )
 
             return {
                 "homes_data": homes_data,
@@ -115,10 +117,11 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             }
 
         except NetatmoAuthError as err:
-            # Auth errors need reauth, not retry
+            # Auth errors need reauth, not retry: raising ConfigEntryAuthFailed
+            # makes Home Assistant start the reauthentication flow.
             self._adjust_update_interval(success=False)
-            _LOGGER.error(f"Authentication error: {err}")
-            raise UpdateFailed(f"Authentication error - reauth may be required: {err}")
+            _LOGGER.error("Authentication error: %s", err)
+            raise ConfigEntryAuthFailed(str(err)) from err
 
         except NetatmoAPIError as err:
             self._adjust_update_interval(success=False)
@@ -126,7 +129,9 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             # If we have cached data and haven't failed too many times, return stale data
             if self.data is not None and self._consecutive_update_failures <= 3:
                 _LOGGER.warning(
-                    f"API error, returning cached data (failure {self._consecutive_update_failures}/3): {err}"
+                    "API error, returning cached data (failure %d/3): %s",
+                    self._consecutive_update_failures,
+                    err,
                 )
                 # Return existing data with staleness indicator
                 return {
@@ -137,54 +142,27 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
                     "last_error": str(err),
                 }
 
-            raise UpdateFailed(f"Error communicating with Netatmo API: {err}")
+            raise UpdateFailed(f"Error communicating with Netatmo API: {err}") from err
 
         except Exception as err:
             self._adjust_update_interval(success=False)
-            _LOGGER.exception(f"Unexpected error during update: {err}")
-            raise UpdateFailed(f"Unexpected error: {err}")
+            _LOGGER.exception("Unexpected error during update")
+            raise UpdateFailed(f"Unexpected error: {err}") from err
 
     async def async_handle_webhook(self, webhook_data: dict) -> None:
-        """Handle webhook update and merge into coordinator data."""
+        """Handle an incoming Netatmo webhook by triggering a fresh pull.
+
+        Netatmo webhooks are used purely as a "something changed" signal: we
+        speed up the poll interval and request an immediate refresh so the
+        authoritative state comes from the API rather than the (untrusted)
+        webhook payload.
+        """
         self.webhook_active = True
         self.update_interval = timedelta(seconds=MIN_UPDATE_INTERVAL)
-        
-        # Extract events and push date
-        events = webhook_data.get("events", [])
+
         push_type = webhook_data.get("push_type")
-        
-        if not self.data:
-            await self.async_request_refresh()
-            return
-            
-        # Optimization: Update local data directly if possible to avoid API call
-        # We need to map webhook structure to our internal data structure
-        # This acts as a "push" update
-        
-        updated = False
-        current_data = self.data
-        
-        # Deep copy to avoid mutating state directly before we're ready
-        import copy
-        new_data = copy.deepcopy(current_data)
-        
-        # Process room updates from webhook
-        # Webhook payload usually simplifies checks, but let's see which specific events we handle
-        # Common events: "therm_mode", "setpoint", "consulted", "heating_status"
-        
-        # Netatmo webhook often sends the full object for the changed resource
-        # But documentation says we should use it to trigger a pull. 
-        # However, for pure state changes (setpoint, mode), we can be optimistic.
-        
-        _LOGGER.debug(f"Received webhook event: {push_type}")
-        
-        # If it's a significant status change, we might still want to pull to be safe,
-        # but let's throttle it.
-        
-        # For now, let's stick to the immediate refresh pattern but ensure it respects rate limits
-        # The previous implementation was fine, but we can make it "force" a refresh
-        # properly by ignoring the debounce if it's a webhook.
-        
+        _LOGGER.debug("Received webhook event: %s", push_type)
+
         await self.async_request_refresh()
 
     async def async_force_refresh(self) -> bool:

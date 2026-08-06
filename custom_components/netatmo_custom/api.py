@@ -1,4 +1,5 @@
 """Netatmo API client for custom integration."""
+
 import asyncio
 import json
 import logging
@@ -30,7 +31,12 @@ RATE_LIMIT_WINDOW = 10  # seconds
 RATE_LIMIT_MAX_REQUESTS = 40  # stay under limit
 
 # Netatmo error codes that are transient and worth retrying
-TRANSIENT_ERROR_CODES = {"9", "10", "13", "26"}  # 13 = Couldn't apply setpoint, Device unreachable, internal error
+TRANSIENT_ERROR_CODES = {
+    "9",
+    "10",
+    "13",
+    "26",
+}  # 13 = Couldn't apply setpoint, Device unreachable, internal error
 
 
 class NetatmoAPIError(Exception):
@@ -76,8 +82,7 @@ class NetatmoAPI:
         now = time.time()
         # Remove timestamps outside the window
         self._request_timestamps = [
-            ts for ts in self._request_timestamps
-            if now - ts < RATE_LIMIT_WINDOW
+            ts for ts in self._request_timestamps if now - ts < RATE_LIMIT_WINDOW
         ]
 
         if len(self._request_timestamps) >= RATE_LIMIT_MAX_REQUESTS:
@@ -104,9 +109,7 @@ class NetatmoAPI:
             response_text = await resp.text()
             return resp.status, response_text, dict(resp.headers)
 
-    async def async_request(
-        self, method: str, endpoint: str, **kwargs
-    ) -> dict[str, Any]:
+    async def async_request(self, method: str, endpoint: str, **kwargs) -> dict[str, Any]:
         """Make authenticated API request with retry logic.
 
         Args:
@@ -134,8 +137,8 @@ class NetatmoAPI:
             try:
                 access_token = await self.async_get_access_token()
             except Exception as err:
-                _LOGGER.error(f"Failed to get access token: {err}")
-                raise NetatmoAuthError(f"Failed to get access token: {err}")
+                _LOGGER.error("Failed to get access token: %s", err)
+                raise NetatmoAuthError(f"Failed to get access token: {err}") from err
 
             # Build headers for this request (fresh copy each attempt)
             headers = {**custom_headers, "Authorization": f"Bearer {access_token}"}
@@ -148,30 +151,35 @@ class NetatmoAPI:
                 # Handle authentication errors (no retry)
                 if status == 401:
                     self._consecutive_failures += 1
-                    raise NetatmoAuthError(f"Unauthorized - token may be invalid. Response: {response_text}")
+                    raise NetatmoAuthError("Unauthorized (401) - token may be invalid")
                 elif status == 403:
                     # Look at response text to see if it's transient
                     try:
                         err_res = json.loads(response_text)
                         err_code = err_res.get("error", {}).get("code")
-                        if str(err_code) in TRANSIENT_ERROR_CODES:
-                            if attempt < MAX_RETRIES:
-                                backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
-                                _LOGGER.warning(f"Transient Netatmo error 403 (code {err_code}), retrying in {backoff}s")
-                                await asyncio.sleep(backoff)
-                                continue
+                        if str(err_code) in TRANSIENT_ERROR_CODES and attempt < MAX_RETRIES:
+                            backoff = min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                            _LOGGER.warning(
+                                "Transient Netatmo error 403 (code %s), retrying in %ss",
+                                err_code,
+                                backoff,
+                            )
+                            await asyncio.sleep(backoff)
+                            continue
                     except json.JSONDecodeError:
                         pass
-                    
+
                     self._consecutive_failures += 1
-                    raise NetatmoAuthError(f"Forbidden - re-authentication required. Response: {response_text}")
+                    raise NetatmoAuthError("Forbidden (403) - re-authentication required")
 
                 # Handle rate limiting (429)
                 if status == 429:
                     # HTTP headers are case-insensitive, normalize lookup
-                    retry_after_str = resp_headers.get("Retry-After") or resp_headers.get("retry-after") or "60"
+                    retry_after_str = (
+                        resp_headers.get("Retry-After") or resp_headers.get("retry-after") or "60"
+                    )
                     retry_after = int(retry_after_str)
-                    _LOGGER.warning(f"Rate limited by Netatmo API, retry after {retry_after}s")
+                    _LOGGER.warning("Rate limited by Netatmo API, retry after %ss", retry_after)
                     if attempt < MAX_RETRIES:
                         await asyncio.sleep(min(retry_after, MAX_BACKOFF))
                         continue
@@ -181,23 +189,29 @@ class NetatmoAPI:
                 # Handle server errors (5xx) with retry
                 if status >= 500:
                     if attempt < MAX_RETRIES:
-                        backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
-                        _LOGGER.warning(f"Server error {status}, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                        backoff = min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                        _LOGGER.warning(
+                            "Server error %s, retrying in %ss (attempt %d/%d)",
+                            status,
+                            backoff,
+                            attempt + 1,
+                            MAX_RETRIES,
+                        )
                         await asyncio.sleep(backoff)
                         continue
                     self._consecutive_failures += 1
-                    raise NetatmoAPIError(f"Server error {status} after {MAX_RETRIES} retries: {response_text}")
+                    raise NetatmoAPIError(f"Server error {status} after {MAX_RETRIES} retries")
 
                 # Handle other client errors (4xx)
                 if status >= 400:
                     self._consecutive_failures += 1
-                    raise NetatmoAPIError(f"Client error {status}: {response_text}")
+                    raise NetatmoAPIError(f"Client error {status}")
 
                 try:
                     result = json.loads(response_text)
                 except json.JSONDecodeError as err:
                     self._consecutive_failures += 1
-                    raise NetatmoAPIError(f"Invalid JSON response: {err}")
+                    raise NetatmoAPIError(f"Invalid JSON response: {err}") from err
 
                 # Check Netatmo API status
                 if result.get("status") != "ok":
@@ -205,34 +219,44 @@ class NetatmoAPI:
                     error_code = result.get("error", {}).get("code", "unknown")
 
                     # Some errors are transient and worth retrying
-                    if str(error_code) in TRANSIENT_ERROR_CODES:
-                        if attempt < MAX_RETRIES:
-                            backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
-                            _LOGGER.warning(f"Netatmo error {error_code}, retrying in {backoff}s")
-                            await asyncio.sleep(backoff)
-                            continue
+                    if str(error_code) in TRANSIENT_ERROR_CODES and attempt < MAX_RETRIES:
+                        backoff = min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                        _LOGGER.warning("Netatmo error %s, retrying in %ss", error_code, backoff)
+                        await asyncio.sleep(backoff)
+                        continue
 
                     self._consecutive_failures += 1
-                    _LOGGER.error(f"Netatmo API error: {error_code} - {error_msg}")
+                    _LOGGER.error("Netatmo API error: %s - %s", error_code, error_msg)
                     raise NetatmoAPIError(f"API returned error: {error_code} - {error_msg}")
 
                 # Success - reset failure counter
                 self._consecutive_failures = 0
                 return result
 
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 last_error = err
                 if attempt < MAX_RETRIES:
-                    backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
-                    _LOGGER.warning(f"Request timeout, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    backoff = min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                    _LOGGER.warning(
+                        "Request timeout, retrying in %ss (attempt %d/%d)",
+                        backoff,
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
                     await asyncio.sleep(backoff)
                     continue
 
             except aiohttp.ClientError as err:
                 last_error = err
                 if attempt < MAX_RETRIES:
-                    backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
-                    _LOGGER.warning(f"Connection error: {err}, retrying in {backoff}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    backoff = min(INITIAL_BACKOFF * (2**attempt), MAX_BACKOFF)
+                    _LOGGER.warning(
+                        "Connection error: %s, retrying in %ss (attempt %d/%d)",
+                        err,
+                        backoff,
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
                     await asyncio.sleep(backoff)
                     continue
 
@@ -294,7 +318,7 @@ class NetatmoAPI:
         Returns:
             API response
         """
-        data = {
+        data: dict[str, Any] = {
             "home_id": home_id,
             "room_id": room_id,
             "mode": mode,
@@ -325,7 +349,7 @@ class NetatmoAPI:
         Returns:
             API response
         """
-        data = {
+        data: dict[str, Any] = {
             "home_id": home_id,
             "mode": mode,
         }

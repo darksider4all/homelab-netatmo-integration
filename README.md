@@ -12,6 +12,13 @@ Custom Home Assistant integration for Netatmo Thermostats with enhanced local po
 - **Detailed Control**: Full support for heating modes including Schedule, Manual, Max, Off, and Frost Guard.
 - **Schedule Management**: Dedicated service to switch between Netatmo schedules.
 - **Sensors**: Battery levels, wifi signal strength, and firmware information.
+- **Resilient**: Automatic token refresh with reauth flow, request retry/backoff, rate-limiting, and graceful degradation to cached data during outages.
+
+## Compatibility
+
+- **Home Assistant**: 2024.1.0 or later.
+- **Devices**: Smart Thermostat (NATherm1), Smart Radiator Valve (NRV), Relay (NAPlug), OpenTherm (OTH) and Modulating (OTM) thermostats.
+- **No external Python dependencies** — only Home Assistant core libraries are used.
 
 ## Installation
 
@@ -54,9 +61,31 @@ Switch the home's heating schedule to a specific named schedule from your Netatm
 - `entity_id`: The climate entity (e.g., `climate.living_room`)
 - `schedule_name`: The exact name of the schedule in your Netatmo app (case-sensitive).
 
-## Contributing
+## Troubleshooting
 
-Issues and Pull Requests are welcome!
+- **Webhooks not firing / no fast updates**: Webhooks require an external URL. Set one under
+  `Settings → System → Network → Home Assistant URL` (or use Home Assistant Cloud). Without it the
+  integration still works via polling, just less promptly.
+- **"Reauthentication needed" notification**: Netatmo periodically invalidates tokens. The integration
+  raises a reauth flow automatically — open it and re-link your account; your devices, entities, and
+  automations are preserved.
+- **Entities show as unavailable**: This happens only after several consecutive update failures (a
+  sustained API/network outage). The integration serves cached data first and recovers automatically.
+- **Diagnostics**: Download diagnostics from the integration's device page for a redacted snapshot of
+  coordinator health (last update, failures, interval, webhook status). Tokens and IDs are redacted.
+
+## Development
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, linting,
+type-checking, and running the test suite. CI runs `ruff`, `mypy`, `pytest`, `hassfest`, and HACS
+validation on every push.
+
+### Quality scale
+
+This integration targets the Home Assistant **Silver** quality tier: config + reauth flow, unique IDs,
+device info, diagnostics with redaction, automatic retry/recovery, and a test suite. Remaining
+Gold-tier items (entity-name translations and `repairs.py` issues) are tracked in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

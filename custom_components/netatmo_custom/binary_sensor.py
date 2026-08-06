@@ -1,4 +1,5 @@
 """Binary sensor platform for Netatmo Custom integration."""
+
 import logging
 from typing import Any
 
@@ -43,12 +44,10 @@ async def async_setup_entry(
         entry: Config entry
         async_add_entities: Callback to add entities
     """
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][
-        DATA_COORDINATOR
-    ]
+    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     home_id: str = hass.data[DOMAIN][entry.entry_id][DATA_HOME_ID]
 
-    entities = []
+    entities: list[BinarySensorEntity] = []
 
     # Get modules from homestatus
     home_status = coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
@@ -87,9 +86,7 @@ async def async_setup_entry(
 
             # Boiler status binary sensor
             entities.append(
-                NetatmoBoilerStatusSensor(
-                    coordinator, module_id, module_name, module_type, home_id
-                )
+                NetatmoBoilerStatusSensor(coordinator, module_id, module_name, module_type, home_id)
             )
 
             # Anticipating binary sensor (pre-heating) - uses room data

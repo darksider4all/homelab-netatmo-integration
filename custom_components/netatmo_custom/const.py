@@ -61,5 +61,17 @@ ENTITY_PREFIX = "netatmo"
 # Update intervals
 UPDATE_INTERVAL = 60  # seconds
 
+# Climate state-change verification (Netatmo can be slow to apply setpoints)
+VERIFY_PROPAGATION_DELAY = 4  # seconds to wait before re-reading after an API call
+VERIFY_SETTLE_DELAY = 1  # seconds to wait after a coordinator refresh
+VERIFY_RETRY_BASE_DELAY = 4  # base seconds between verification retries (scaled by attempt)
+VERIFY_MAX_RETRIES = 4  # additional verification attempts after the first
+
+# Webhook handling
+MAX_WEBHOOK_BODY_BYTES = 256 * 1024  # reject webhook payloads larger than this
+
+# Entity availability
+MAX_CONSECUTIVE_FAILURES = 5  # mark entities unavailable above this many failures
+
 # Service names
 SERVICE_SET_SCHEDULE = "set_schedule"

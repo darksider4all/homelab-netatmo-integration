@@ -1,22 +1,23 @@
 """Climate platform for Netatmo Custom integration."""
+
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
+import logging
 from typing import Any
 
 from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature
 from homeassistant.components.climate.const import (
-    HVACAction,
-    HVACMode,
     PRESET_AWAY,
     PRESET_HOME,
     PRESET_NONE,
+    HVACAction,
+    HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import NetatmoAPI
@@ -26,10 +27,15 @@ from .const import (
     DATA_HOME_ID,
     DOMAIN,
     ENTITY_PREFIX,
+    MAX_CONSECUTIVE_FAILURES,
     MAX_TEMP,
     MIN_TEMP,
     PRESET_FROST_GUARD,
     TEMP_STEP,
+    VERIFY_MAX_RETRIES,
+    VERIFY_PROPAGATION_DELAY,
+    VERIFY_RETRY_BASE_DELAY,
+    VERIFY_SETTLE_DELAY,
 )
 from .coordinator import NetatmoDataUpdateCoordinator
 
@@ -55,13 +61,11 @@ async def async_setup_entry(
         entry: Config entry
         async_add_entities: Callback to add entities
     """
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][
-        DATA_COORDINATOR
-    ]
+    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     home_id: str = hass.data[DOMAIN][entry.entry_id][DATA_HOME_ID]
 
-    # Get home data
-    homes_data = coordinator.data["homes_data"]["body"]["homes"]
+    # Get home data (defensive: a partial payload should add zero entities, not crash)
+    homes_data = (coordinator.data or {}).get("homes_data", {}).get("body", {}).get("homes", [])
     rooms = []
     modules = []
     home_name = "Netatmo Home"
@@ -99,7 +103,9 @@ async def async_setup_entry(
                     break
 
             entities.append(
-                NetatmoThermostat(coordinator, room, home_id, home_name, thermostat_module, relay_module_id)
+                NetatmoThermostat(
+                    coordinator, room, home_id, home_name, thermostat_module, relay_module_id
+                )
             )
 
     async_add_entities(entities)
@@ -165,7 +171,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         self._room_id = room["id"]
         self._module = module
         self._relay_module_id = relay_module_id
-        self._optimistic_preset = None  # For immediate UI updates
+        self._optimistic_preset: str | None = None  # For immediate UI updates
 
         # Get module info
         module_id = module["id"] if module else room["id"]
@@ -183,7 +189,9 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             name=module_name,
             manufacturer="Netatmo",
             model=DEVICE_TYPES.get(module_type, module_type),
-            via_device=(DOMAIN, relay_module_id) if module_type != "NAPlug" and relay_module_id else None,
+            via_device=(DOMAIN, relay_module_id)
+            if module_type != "NAPlug" and relay_module_id
+            else None,
             configuration_url="https://my.netatmo.com",
         )
 
@@ -247,24 +255,26 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
 
-        # Check if currently heating
-        # Netatmo returns heating_power_request as percentage (0-100)
-        # If > 0, the valve is open and boiler is likely firing (or requested to)
+        # Check if currently heating.
+        # Netatmo returns heating_power_request as a percentage (0-100); >0 means
+        # the valve is open / heat is requested.
         heating_power = status.get("heating_power_request", 0)
-        
-        # Also check boiler status if available (global for home)
+
+        # Also check the home's boiler status (a thermostat with the boiler firing).
         boiler_status = False
-        home_status = self.coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
+        home_status = (
+            (self.coordinator.data or {}).get("home_status", {}).get("body", {}).get("home", {})
+        )
         for module in home_status.get("modules", []):
-             if module.get("type") in ["NATherm1", "OTH", "OTM"]:
-                 if module.get("boiler_status") is True:
-                     boiler_status = True
-                     break
-        
-        # If we have a specific power request > 0, we report HEATING
-        if heating_power > 0:
+            if module.get("type") in ("NATherm1", "OTH", "OTM") and (
+                module.get("boiler_status") is True
+            ):
+                boiler_status = True
+                break
+
+        if heating_power > 0 or boiler_status:
             return HVACAction.HEATING
-        
+
         return HVACAction.IDLE
 
     @property
@@ -318,7 +328,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         # Consider unavailable if too many consecutive failures
-        if self.coordinator.consecutive_failures > 5:
+        if self.coordinator.consecutive_failures > MAX_CONSECUTIVE_FAILURES:
             return False
         return super().available
 
@@ -327,7 +337,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         api_call: Callable[[], Awaitable[Any]],
         verification_func: Callable[[], bool],
         description: str,
-        max_retries: int = 4,
+        max_retries: int = VERIFY_MAX_RETRIES,
     ) -> bool:
         """Call API and verify the change was applied.
 
@@ -344,25 +354,27 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             try:
                 await api_call()
                 # Wait for state to propagate (Netatmo can be slow to apply setpoints)
-                await asyncio.sleep(4)
+                await asyncio.sleep(VERIFY_PROPAGATION_DELAY)
                 await self.coordinator.async_request_refresh()
-                await asyncio.sleep(1)
+                await asyncio.sleep(VERIFY_SETTLE_DELAY)
 
                 if verification_func():
                     if attempt > 0:
-                        _LOGGER.info(f"{description} succeeded after {attempt + 1} attempts")
+                        _LOGGER.info("%s succeeded after %d attempts", description, attempt + 1)
                     return True
-                else:
-                    _LOGGER.warning(
-                        f"{description} not verified after attempt {attempt + 1}/{max_retries + 1}"
-                    )
+                _LOGGER.warning(
+                    "%s not verified after attempt %d/%d",
+                    description,
+                    attempt + 1,
+                    max_retries + 1,
+                )
             except Exception as err:
-                _LOGGER.warning(f"{description} failed (attempt {attempt + 1}): {err}")
+                _LOGGER.warning("%s failed (attempt %d): %s", description, attempt + 1, err)
 
             if attempt < max_retries:
                 # Increasing delay between retries
-                delay = 4 * (attempt + 1)
-                _LOGGER.info(f"Retrying {description} in {delay}s...")
+                delay = VERIFY_RETRY_BASE_DELAY * (attempt + 1)
+                _LOGGER.info("Retrying %s in %ds...", description, delay)
                 await asyncio.sleep(delay)
 
         _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
@@ -374,9 +386,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if temp is None:
             return
 
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][
-            DATA_API
-        ]
+        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
 
         async def api_call():
             await api.async_set_room_thermpoint(
@@ -398,15 +408,11 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][
-            DATA_API
-        ]
+        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
 
         async def api_call():
             if hvac_mode == HVACMode.OFF:
-                await api.async_set_room_thermpoint(
-                    self._home_id, self._room_id, mode="off"
-                )
+                await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="off")
             elif hvac_mode == HVACMode.HEAT:
                 target = self.target_temperature or 19.0
                 await api.async_set_room_thermpoint(
@@ -424,9 +430,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set preset mode."""
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][
-            DATA_API
-        ]
+        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
 
         # Map HA presets to Netatmo modes
         mode_map = {

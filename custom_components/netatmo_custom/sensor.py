@@ -1,4 +1,5 @@
 """Sensor platform for Netatmo Custom integration."""
+
 import logging
 from typing import Any
 
@@ -53,12 +54,10 @@ async def async_setup_entry(
         entry: Config entry
         async_add_entities: Callback to add entities
     """
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][
-        DATA_COORDINATOR
-    ]
+    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     home_id: str = hass.data[DOMAIN][entry.entry_id][DATA_HOME_ID]
 
-    entities = []
+    entities: list[SensorEntity] = []
 
     # Get modules from homestatus
     home_status = coordinator.data.get("home_status", {}).get("body", {}).get("home", {})
@@ -102,9 +101,7 @@ async def async_setup_entry(
 
             # Battery state sensor
             entities.append(
-                NetatmoBatteryStateSensor(
-                    coordinator, module_id, module_name, module_type, home_id
-                )
+                NetatmoBatteryStateSensor(coordinator, module_id, module_name, module_type, home_id)
             )
 
             # RF signal strength sensor
@@ -137,26 +134,26 @@ async def async_setup_entry(
         module_id = module.get("id")
         module_type = module.get("type")
         module_name = module_names.get(module_id, module_id)
-        
+
         # Check available data keys
         # Some modules might report these in dashboard_data or directly
         # We'll check the module dict keys dynamically
-        
+
         # Humidity
         if "humidity" in module or module.get("dashboard_data", {}).get("Humidity") is not None:
-             entities.append(
+            entities.append(
                 NetatmoEnvironmentSensor(
                     coordinator, module_id, module_name, module_type, home_id, "humidity"
                 )
-             )
-             
+            )
+
         # CO2
         if "co2" in module or module.get("dashboard_data", {}).get("CO2") is not None:
-             entities.append(
+            entities.append(
                 NetatmoEnvironmentSensor(
                     coordinator, module_id, module_name, module_type, home_id, "co2"
                 )
-             )
+            )
 
     async_add_entities(entities)
     _LOGGER.info(f"Added {len(entities)} Netatmo sensors")
@@ -186,7 +183,7 @@ class NetatmoEnvironmentSensor(CoordinatorEntity, SensorEntity):
 
         self._attr_unique_id = f"{ENTITY_PREFIX}_{home_id}_{module_id}_{sensor_type}"
         self._attr_name = sensor_type.capitalize()
-        
+
         if sensor_type == "humidity":
             self._attr_device_class = SensorDeviceClass.HUMIDITY
             self._attr_native_unit_of_measurement = PERCENTAGE
@@ -210,17 +207,14 @@ class NetatmoEnvironmentSensor(CoordinatorEntity, SensorEntity):
         module = self._get_module()
         if not module:
             return None
-            
+
         # Try direct key first
         if self._sensor_type in module:
             return module[self._sensor_type]
-            
+
         # Try dashboard_data (common in Netatmo API for measurements)
         dashboard_data = module.get("dashboard_data", {})
-        key_map = {
-            "humidity": "Humidity",
-            "co2": "CO2"
-        }
+        key_map = {"humidity": "Humidity", "co2": "CO2"}
         return dashboard_data.get(key_map.get(self._sensor_type))
 
     def _get_module(self) -> dict | None:
@@ -265,7 +259,9 @@ class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
             name=module_name,
             manufacturer="Netatmo",
             model=DEVICE_TYPES.get(module_type, module_type),
-            via_device=(DOMAIN, relay_module_id) if module_type != "NAPlug" and relay_module_id else None,
+            via_device=(DOMAIN, relay_module_id)
+            if module_type != "NAPlug" and relay_module_id
+            else None,
         )
 
     @property
@@ -357,21 +353,18 @@ class NetatmoBatteryStateSensor(CoordinatorEntity, SensorEntity):
 
         return module.get("battery_state", "unknown")
 
+    _BATTERY_ICONS = {
+        "full": "mdi:battery",
+        "high": "mdi:battery-70",
+        "medium": "mdi:battery-50",
+        "low": "mdi:battery-30",
+        "very low": "mdi:battery-alert",
+    }
+
     @property
     def icon(self) -> str:
         """Return icon based on battery state."""
-        state = self.native_value
-        if state == "full":
-            return "mdi:battery"
-        elif state == "high":
-            return "mdi:battery-70"
-        elif state == "medium":
-            return "mdi:battery-50"
-        elif state == "low":
-            return "mdi:battery-30"
-        elif state == "very low":
-            return "mdi:battery-alert"
-        return "mdi:battery-unknown"
+        return self._BATTERY_ICONS.get(self.native_value or "", "mdi:battery-unknown")
 
     def _get_module(self) -> dict | None:
         """Get module data from coordinator."""

@@ -1,0 +1,23 @@
+# HACS Validation — parallel workflow created 2026-08-13.
+# The canonical .github/workflows/hacs.yaml is temporarily blocked by an orphaned
+# run record on GitHub's side (uncancellable queued run, HTTP 500 on cancel).
+# This file runs the identical validation under a distinct workflow ID so
+# submissions are not held hostage; hacs.yaml resumes normal service once
+# GitHub clears the orphan (file kept in place for the canonical name).
+name: HACS Validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hacs:
+    name: HACS Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: HACS Action
+        uses: hacs/action@main
+        with:
+          category: integration

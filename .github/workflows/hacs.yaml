@@ -1,3 +1,5 @@
+# Re-enabled 2026-08-13 after GitHub auto-disabled for inactivity (60-day quiet repo).
+# Workflow recreated 2026-08-13 to clear an orphaned run record that blocked scheduling.
 name: HACS Validation
 
 on:

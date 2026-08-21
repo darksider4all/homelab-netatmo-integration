@@ -8,6 +8,7 @@
   "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/darksider4all/homelab-netatmo-integration/issues",
+  "quality_scale": "silver",
   "requirements": [],
-  "version": "1.3.0"
+  "version": "1.3.1"
 }

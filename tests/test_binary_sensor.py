@@ -161,3 +161,13 @@ def test_reachable_extra_attributes_missing_module():
     coordinator = _coordinator([])
     sensor = NetatmoReachableSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "plug-1")
     assert sensor.extra_state_attributes == {}
+
+
+# --- Silver quality scale: PARALLEL_UPDATES ---
+
+
+def test_parallel_updates_declared_zero():
+    """Silver rule parallel-updates: binary sensors explicitly serialise updates."""
+    assert NetatmoBoilerStatusSensor.PARALLEL_UPDATES == 0
+    assert NetatmoAnticipatingStatusSensor.PARALLEL_UPDATES == 0
+    assert NetatmoReachableSensor.PARALLEL_UPDATES == 0

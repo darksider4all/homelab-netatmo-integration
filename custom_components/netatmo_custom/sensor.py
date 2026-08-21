@@ -160,6 +160,7 @@ async def async_setup_entry(
 class NetatmoEnvironmentSensor(CoordinatorEntity, SensorEntity):
     """Environment sensor for Netatmo devices (CO2, Humidity)."""
 
+    PARALLEL_UPDATES = 0
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_has_entity_name = True
 
@@ -227,6 +228,7 @@ class NetatmoEnvironmentSensor(CoordinatorEntity, SensorEntity):
 class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
     """Battery level sensor for Netatmo devices."""
 
+    PARALLEL_UPDATES = 0
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -315,6 +317,7 @@ class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
 class NetatmoBatteryStateSensor(CoordinatorEntity, SensorEntity):
     """Battery state sensor for Netatmo devices."""
 
+    PARALLEL_UPDATES = 0
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = True
@@ -376,6 +379,7 @@ class NetatmoBatteryStateSensor(CoordinatorEntity, SensorEntity):
 class NetatmoSignalStrengthSensor(CoordinatorEntity, SensorEntity):
     """Signal strength sensor for Netatmo devices."""
 
+    PARALLEL_UPDATES = 0
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = True

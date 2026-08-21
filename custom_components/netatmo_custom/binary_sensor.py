@@ -110,6 +110,7 @@ async def async_setup_entry(
 class NetatmoBoilerStatusSensor(CoordinatorEntity, BinarySensorEntity):
     """Boiler status binary sensor."""
 
+    PARALLEL_UPDATES = 0
     _attr_device_class = BinarySensorDeviceClass.HEAT
     _attr_has_entity_name = True
 
@@ -169,6 +170,7 @@ class NetatmoBoilerStatusSensor(CoordinatorEntity, BinarySensorEntity):
 class NetatmoAnticipatingStatusSensor(CoordinatorEntity, BinarySensorEntity):
     """Anticipating (pre-heating) status binary sensor."""
 
+    PARALLEL_UPDATES = 0
     _attr_has_entity_name = True
 
     def __init__(
@@ -217,6 +219,7 @@ class NetatmoAnticipatingStatusSensor(CoordinatorEntity, BinarySensorEntity):
 class NetatmoReachableSensor(CoordinatorEntity, BinarySensorEntity):
     """Device connectivity binary sensor."""
 
+    PARALLEL_UPDATES = 0
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = True

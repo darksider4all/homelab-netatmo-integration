@@ -337,3 +337,110 @@ async def test_set_preset_unknown_preset_returns(home_status, homes_data):
     result = await entity.async_set_preset_mode("not-a-preset")
     assert result is None
     api.async_set_therm_mode.assert_not_awaited()
+
+
+# --- Silver quality scale: PARALLEL_UPDATES + remaining coverage ---
+
+
+def test_parallel_updates_declared_zero(entity):
+    """Silver rule parallel-updates: the climate entity explicitly serialises updates."""
+    assert NetatmoThermostat.PARALLEL_UPDATES == 0
+
+
+def test_unknown_setpoint_mode_falls_back_to_auto(home_status, homes_data):
+    """An unrecognised Netatmo setpoint mode maps to AUTO."""
+    _set_room_mode(home_status, "boost")
+    entity = _make_entity(home_status, homes_data)
+    assert entity.hvac_mode == HVACMode.AUTO
+
+
+def test_extra_state_attributes_include_last_error(entity):
+    """A coordinator-reported error is surfaced in extra attributes."""
+    entity.coordinator.data["last_error"] = "boom"
+    attrs = entity.extra_state_attributes
+    assert attrs["last_error"] == "boom"
+
+
+def test_available_reflects_coordinator_health(home_status, homes_data):
+    """Below the failure threshold availability follows the coordinator."""
+    entity = _make_entity(home_status, homes_data, failures=1)
+    entity.coordinator.last_update_success = False
+    assert entity.available is False
+
+
+async def test_set_temperature_verifies_applied_value(home_status, homes_data, zero_delays):
+    """set_temperature runs the full verify cycle and succeeds when the target matches."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    # Fixture target temperature is 20.0; matching it verifies on the first attempt.
+    await entity.async_set_temperature(temperature=20.0)
+    api.async_set_room_thermpoint.assert_awaited_once_with(
+        "home-1", "room-1", mode="manual", temp=20.0
+    )
+
+
+async def test_set_temperature_refreshes_when_unverified(home_status, homes_data, zero_delays):
+    """A set_temperature that never verifies still forces one final refresh."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    # 99.0 can never match the fixture's 20.0, so every verification attempt fails.
+    await entity.async_set_temperature(temperature=99.0)
+    assert entity.coordinator.async_request_refresh.await_count >= 1
+
+
+async def test_set_hvac_mode_verifies_applied_mode(home_status, homes_data, zero_delays):
+    """set_hvac_mode succeeds via the full verification cycle when the mode matches."""
+    _set_room_mode(home_status, "off")
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    await entity.async_set_hvac_mode(HVACMode.OFF)
+    api.async_set_room_thermpoint.assert_awaited_once_with("home-1", "room-1", mode="off")
+
+
+@pytest.mark.parametrize(
+    ("preset", "room_mode"),
+    [
+        (PRESET_AWAY, "away"),
+        (PRESET_FROST_GUARD, "hg"),
+        (PRESET_HOME, "schedule"),
+        (PRESET_NONE, "schedule"),
+    ],
+)
+async def test_set_preset_mode_full_verification(
+    home_status, homes_data, zero_delays, preset, room_mode
+):
+    """Preset changes verify against the applied Netatmo mode."""
+    _set_room_mode(home_status, room_mode)
+    api = MagicMock()
+    api.async_set_therm_mode = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    entity.async_write_ha_state = MagicMock()
+    await entity.async_set_preset_mode(preset)
+    api.async_set_therm_mode.assert_awaited_once_with(
+        "home-1",
+        mode={
+            PRESET_AWAY: "away",
+            PRESET_FROST_GUARD: "hg",
+            PRESET_HOME: "schedule",
+            PRESET_NONE: "schedule",
+        }[preset],
+    )
+    assert entity._optimistic_preset is None
+
+
+async def test_set_preset_mode_failed_verification_logs_error(
+    home_status, homes_data, zero_delays, caplog
+):
+    """An unverifiable preset change logs an error and clears optimistic state."""
+    home_status["body"]["home"]["rooms"] = []
+    api = MagicMock()
+    api.async_set_therm_mode = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    entity.async_write_ha_state = MagicMock()
+    with caplog.at_level("ERROR", logger="custom_components.netatmo_custom.climate"):
+        await entity.async_set_preset_mode(PRESET_AWAY)
+    assert "Failed to verify preset change to away" in caplog.text
+    assert entity._optimistic_preset is None

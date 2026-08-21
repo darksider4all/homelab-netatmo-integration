@@ -61,6 +61,18 @@ Switch the home's heating schedule to a specific named schedule from your Netatm
 - `entity_id`: The climate entity (e.g., `climate.living_room`)
 - `schedule_name`: The exact name of the schedule in your Netatmo app (case-sensitive).
 
+## Triggers and conditions
+
+**Triggers.** This integration does not register any device or event triggers of its
+own. To react to Netatmo events in automations, use the standard entity-based triggers
+that Home Assistant provides — for example a state trigger on a climate entity
+(`climate.living_room`), a sensor entity (`sensor.living_room_battery`), or a binary
+sensor entity (`binary_sensor.living_room_boiler`).
+
+**Conditions.** This integration does not register any custom conditions. Use the
+built-in Home Assistant conditions (state, numeric state, time, etc.) in your
+automations as usual.
+
 ## Troubleshooting
 
 - **Webhooks not firing / no fast updates**: Webhooks require an external URL. Set one under
@@ -73,6 +85,19 @@ Switch the home's heating schedule to a specific named schedule from your Netatm
   sustained API/network outage). The integration serves cached data first and recovers automatically.
 - **Diagnostics**: Download diagnostics from the integration's device page for a redacted snapshot of
   coordinator health (last update, failures, interval, webhook status). Tokens and IDs are redacted.
+
+## Removing the integration
+
+1. In Home Assistant, go to **Settings → Devices & Services**.
+2. Find the **Homelab Climate** entry in the integrations list.
+3. Open the entry, click the three-dot menu (top right), and select **Delete**.
+4. The integration unloads its platforms, removes its entities and devices, and
+   unregisters its local webhook handler. Deleting the entry does **not** revoke the
+   Netatmo app itself — if you also want to stop the app from accessing your Netatmo
+   account, remove or disable it under **dev.netatmo.com → your app**.
+5. (Optional) To remove the component files entirely, delete the
+   `custom_components/netatmo_custom` directory from your Home Assistant
+   configuration and restart Home Assistant.
 
 ## Development
 

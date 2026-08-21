@@ -91,3 +91,57 @@ async def test_is_data_stale(coordinator):
     assert coordinator.is_data_stale() is True
     coordinator.data = {"stale": False, "timestamp": 9_999_999_999}
     assert coordinator.is_data_stale() is False
+
+
+async def test_last_successful_update_property(coordinator):
+    """last_successful_update reflects the last success timestamp."""
+    assert coordinator.last_successful_update is None
+    await coordinator._async_update_data()
+    assert coordinator.last_successful_update is not None
+
+
+async def test_seconds_since_last_update(coordinator):
+    """seconds_since_last_update is None before any update, then numeric."""
+    assert coordinator.seconds_since_last_update is None
+    await coordinator._async_update_data()
+    seconds = coordinator.seconds_since_last_update
+    assert seconds is not None
+    assert seconds >= 0
+
+
+async def test_recovery_logs_after_failures(coordinator):
+    """A successful update after failures logs a recovery and resets."""
+    coordinator._consecutive_update_failures = 2
+    data = await coordinator._async_update_data()
+    assert data["update_successful"] is True
+    assert coordinator.consecutive_failures == 0
+
+
+async def test_unexpected_error_raises_update_failed(coordinator):
+    """A non-API exception surfaces as UpdateFailed."""
+    coordinator.api.async_get_homes_data = AsyncMock(side_effect=RuntimeError("boom"))
+    with pytest.raises(UpdateFailed, match="Unexpected error"):
+        await coordinator._async_update_data()
+
+
+async def test_force_refresh_success(coordinator):
+    """async_force_refresh returns True when the refresh produced data."""
+    coordinator.async_request_refresh = AsyncMock()
+    coordinator.data = {"update_successful": True}
+    assert await coordinator.async_force_refresh() is True
+    coordinator.async_request_refresh.assert_awaited_once()
+
+
+async def test_force_refresh_failure(coordinator):
+    """async_force_refresh returns False when data is missing/stale."""
+    coordinator.async_request_refresh = AsyncMock()
+    coordinator.data = None
+    assert await coordinator.async_force_refresh() is False
+    coordinator.data = {"update_successful": False}
+    assert await coordinator.async_force_refresh() is False
+
+
+async def test_force_refresh_exception(coordinator):
+    """async_force_refresh returns False when the refresh raises."""
+    coordinator.async_request_refresh = AsyncMock(side_effect=RuntimeError("boom"))
+    assert await coordinator.async_force_refresh() is False

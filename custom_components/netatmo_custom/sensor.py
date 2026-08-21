@@ -16,8 +16,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    DATA_COORDINATOR,
-    DATA_HOME_ID,
     DOMAIN,
     ENTITY_PREFIX,
 )
@@ -54,8 +52,8 @@ async def async_setup_entry(
         entry: Config entry
         async_add_entities: Callback to add entities
     """
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-    home_id: str = hass.data[DOMAIN][entry.entry_id][DATA_HOME_ID]
+    coordinator: NetatmoDataUpdateCoordinator = entry.runtime_data.coordinator
+    home_id: str = entry.runtime_data.home_id
 
     entities: list[SensorEntity] = []
 

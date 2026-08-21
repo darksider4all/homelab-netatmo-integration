@@ -17,5 +17,5 @@ def async_register(hass: HomeAssistant, register: system_health.SystemHealthRegi
 async def system_health_info(hass: HomeAssistant) -> dict[str, Any]:
     """Return info for the system health page."""
     return {
-        "can_reach_server": system_health.async_check_can_reach_url(hass, API_BASE_URL),
+        "can_reach_server": await system_health.async_check_can_reach_url(hass, API_BASE_URL),
     }

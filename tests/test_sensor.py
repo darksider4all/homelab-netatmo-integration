@@ -205,3 +205,78 @@ def test_signal_missing_value_has_no_attributes():
     coordinator = _coordinator([{"id": "m1"}])
     sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "wifi")
     assert sensor.extra_state_attributes == {}
+
+
+# --- Silver quality scale: PARALLEL_UPDATES + remaining coverage ---
+
+
+def test_parallel_updates_declared_zero():
+    """Silver rule parallel-updates: the sensor entity explicitly serialises updates."""
+    assert NetatmoBatteryLevelSensor.PARALLEL_UPDATES == 0
+    assert NetatmoEnvironmentSensor.PARALLEL_UPDATES == 0
+    assert NetatmoBatteryStateSensor.PARALLEL_UPDATES == 0
+    assert NetatmoSignalStrengthSensor.PARALLEL_UPDATES == 0
+
+
+def test_battery_from_millivolts_nrv():
+    """NRV valves use the 2400-3100mV range."""
+    coordinator = _coordinator([{"id": "m1", "battery_level": 2750}])
+    sensor = NetatmoBatteryLevelSensor(coordinator, "m1", "Valve", "NRV", "home-1")
+    # (2750-2400)/(3100-2400)*100 = 50
+    assert sensor.native_value == 50
+
+
+def test_battery_no_state_no_voltage_returns_none():
+    """A module without battery_state or battery_level yields None."""
+    coordinator = _coordinator([{"id": "m1"}])
+    sensor = NetatmoBatteryLevelSensor(coordinator, "m1", "Therm", "NATherm1", "home-1")
+    assert sensor.native_value is None
+
+
+def test_battery_state_missing_module_returns_none():
+    """Battery state with no matching module yields None."""
+    coordinator = _coordinator([])
+    sensor = NetatmoBatteryStateSensor(coordinator, "m1", "Therm", "NATherm1", "home-1")
+    assert sensor.native_value is None
+
+
+def test_signal_missing_module_returns_none():
+    """Signal sensor with no matching module yields None."""
+    coordinator = _coordinator([])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "rf")
+    assert sensor.native_value is None
+
+
+def test_wifi_signal_quality_excellent():
+    """WiFi >= 70 is Excellent."""
+    coordinator = _coordinator([{"id": "m1", "wifi_strength": 85}])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "wifi")
+    assert sensor.extra_state_attributes["signal_quality"] == "Excellent"
+
+
+def test_wifi_signal_quality_fair():
+    """WiFi 30-49 is Fair."""
+    coordinator = _coordinator([{"id": "m1", "wifi_strength": 40}])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "wifi")
+    assert sensor.extra_state_attributes["signal_quality"] == "Fair"
+
+
+def test_rf_signal_quality_good():
+    """RF 60-79 is Good."""
+    coordinator = _coordinator([{"id": "m1", "rf_strength": 68}])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "rf")
+    assert sensor.extra_state_attributes["signal_quality"] == "Good"
+
+
+def test_rf_signal_quality_fair():
+    """RF 40-59 is Fair."""
+    coordinator = _coordinator([{"id": "m1", "rf_strength": 50}])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "rf")
+    assert sensor.extra_state_attributes["signal_quality"] == "Fair"
+
+
+def test_rf_signal_quality_poor():
+    """RF < 40 is Poor."""
+    coordinator = _coordinator([{"id": "m1", "rf_strength": 30}])
+    sensor = NetatmoSignalStrengthSensor(coordinator, "m1", "Therm", "NATherm1", "home-1", "rf")
+    assert sensor.extra_state_attributes["signal_quality"] == "Poor"

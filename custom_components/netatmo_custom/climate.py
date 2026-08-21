@@ -137,6 +137,7 @@ PRESET_MODE_ICONS = {
 class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
     """Netatmo thermostat climate entity."""
 
+    PARALLEL_UPDATES = 0
     _attr_has_entity_name = True
     _attr_translation_key = "thermostat"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS

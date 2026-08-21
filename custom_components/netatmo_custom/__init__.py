@@ -1,6 +1,7 @@
 """Netatmo Custom Thermostat integration."""
 
 import contextlib
+from dataclasses import dataclass
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,9 +19,6 @@ from .api import NetatmoAPI, NetatmoAPIError, NetatmoAuthError
 from .const import (
     CONF_HOME_ID,
     CONF_WEBHOOK_ID,
-    DATA_API,
-    DATA_COORDINATOR,
-    DATA_HOME_ID,
     DOMAIN,
     PLATFORMS,
     SERVICE_SET_SCHEDULE,
@@ -29,6 +27,15 @@ from .coordinator import NetatmoDataUpdateCoordinator
 from .webhook import async_setup_webhook, async_unregister_webhook
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class NetatmoRuntimeData:
+    """Runtime data attached to a loaded config entry."""
+
+    coordinator: NetatmoDataUpdateCoordinator
+    api: NetatmoAPI
+    home_id: str
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -84,13 +91,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         )
                 break
 
-        # Store coordinator and API in hass.data
-        hass.data.setdefault(DOMAIN, {})
-        hass.data[DOMAIN][entry.entry_id] = {
-            DATA_COORDINATOR: coordinator,
-            DATA_API: api,
-            DATA_HOME_ID: home_id,
-        }
+        # Store runtime data on the config entry (ConfigEntry.runtime_data).
+        entry.runtime_data = NetatmoRuntimeData(coordinator=coordinator, api=api, home_id=home_id)
 
         # Setup webhook if webhook_id exists
         webhook_id = entry.data.get(CONF_WEBHOOK_ID)
@@ -143,11 +145,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if webhook_id:
             async_unregister_webhook(hass, webhook_id)
 
-        # Remove data (use pop with default to avoid KeyError)
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Release runtime data
+        entry.runtime_data = None
 
-        # Unregister service if this is the last entry
-        if not hass.data[DOMAIN] and hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
+        # Unregister service if this is the last loaded entry
+        if not any(
+            other.entry_id != entry.entry_id and other.runtime_data is not None
+            for other in hass.config_entries.async_entries(DOMAIN)
+        ) and hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
             hass.services.async_remove(DOMAIN, SERVICE_SET_SCHEDULE)
 
     return unload_ok
@@ -197,14 +202,14 @@ async def async_setup_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         if not entity_id or not schedule_name:
             raise ServiceValidationError("Both 'entity_id' and 'schedule_name' are required")
 
-        # Get API and home_id from hass.data
-        entry_data = hass.data[DOMAIN].get(entry.entry_id)
-        if not entry_data:
+        # Get API and home_id from the entry's runtime data
+        entry_data = entry.runtime_data
+        if entry_data is None:
             raise HomeAssistantError("Netatmo integration data not found")
 
-        api: NetatmoAPI = entry_data[DATA_API]
-        home_id: str = entry_data[DATA_HOME_ID]
-        coordinator: NetatmoDataUpdateCoordinator = entry_data[DATA_COORDINATOR]
+        api: NetatmoAPI = entry_data.api
+        home_id: str = entry_data.home_id
+        coordinator: NetatmoDataUpdateCoordinator = entry_data.coordinator
 
         try:
             schedules = await api.async_get_schedules(home_id)

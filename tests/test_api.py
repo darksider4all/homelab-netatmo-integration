@@ -165,3 +165,143 @@ async def test_rate_limit_waits_when_window_full(api, monkeypatch):
     api._request_timestamps = [now] * api_module.RATE_LIMIT_MAX_REQUESTS
     await api._check_rate_limit()
     assert sleep.await_count == 1
+
+
+# --- Raw HTTP layer ---
+
+
+async def test_do_request_executes_http(api, monkeypatch):
+    """_do_request performs the raw HTTP call and returns status/text/headers."""
+    response = MagicMock()
+    response.status = 200
+    response.text = AsyncMock(return_value=_ok_body({"x": 1}))
+    response.headers = {"Content-Type": "application/json"}
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.request = MagicMock(return_value=response)
+    monkeypatch.setattr(api, "_session", session)
+
+    status, text, headers = await api._do_request(
+        "POST",
+        "homesdata",
+        {"Authorization": "Bearer t"},
+        api_module.aiohttp.ClientTimeout(total=5),
+    )
+
+    assert status == 200
+    assert '"status": "ok"' in text
+    assert headers["Content-Type"] == "application/json"
+    call_kwargs = session.request.call_args.kwargs
+    assert call_kwargs["headers"] == {"Authorization": "Bearer t"}
+
+
+# --- Remaining error branches ---
+
+
+async def test_403_unparseable_body_raises_auth_error(api, monkeypatch):
+    """A 403 with a non-JSON body is treated as non-transient."""
+    monkeypatch.setattr(api, "_do_request", AsyncMock(return_value=(403, "<html>", {})))
+    with pytest.raises(NetatmoAuthError):
+        await api.async_request("POST", "homesdata")
+
+
+async def test_400_client_error_raises(api, monkeypatch):
+    """A generic 4xx raises NetatmoAPIError."""
+    monkeypatch.setattr(api, "_do_request", AsyncMock(return_value=(400, "bad", {})))
+    with pytest.raises(NetatmoAPIError, match="Client error 400"):
+        await api.async_request("POST", "homesdata")
+
+
+async def test_transient_body_code_retries(api, monkeypatch):
+    """A transient error code in the response body is retried then succeeds."""
+    responses = [
+        (200, json.dumps({"status": "error", "error": {"code": 13, "message": "setpoint"}}), {}),
+        (200, _ok_body(), {}),
+    ]
+    monkeypatch.setattr(api, "_do_request", AsyncMock(side_effect=responses))
+    result = await api.async_request("POST", "homesdata")
+    assert result["status"] == "ok"
+
+
+async def test_timeout_retries_then_succeeds(api, monkeypatch):
+    """A TimeoutError is retried and can then succeed."""
+    responses = [TimeoutError(), (200, _ok_body(), {})]
+    monkeypatch.setattr(api, "_do_request", AsyncMock(side_effect=responses))
+    result = await api.async_request("POST", "homesdata")
+    assert result["status"] == "ok"
+
+
+async def test_timeout_exhausts_retries(api, monkeypatch):
+    """A persistent timeout raises NetatmoTimeoutError."""
+    monkeypatch.setattr(api, "_do_request", AsyncMock(side_effect=TimeoutError()))
+    with pytest.raises(api_module.NetatmoTimeoutError):
+        await api.async_request("POST", "homesdata")
+
+
+async def test_client_error_exhausts_retries(api, monkeypatch):
+    """A persistent connection error raises NetatmoAPIError after retries."""
+    monkeypatch.setattr(
+        api, "_do_request", AsyncMock(side_effect=api_module.aiohttp.ClientError("conn"))
+    )
+    with pytest.raises(NetatmoAPIError, match="API request failed"):
+        await api.async_request("POST", "homesdata")
+
+
+async def test_reset_failure_count(api):
+    """reset_failure_count clears the consecutive failure counter."""
+    api._consecutive_failures = 3
+    api.reset_failure_count()
+    assert api.consecutive_failures == 0
+
+
+# --- Endpoint payload builders ---
+
+
+async def test_get_home_status_passes_home_id(api, monkeypatch):
+    """async_get_home_status forwards the home id in the request body."""
+    do_request = AsyncMock(return_value=(200, _ok_body(), {}))
+    monkeypatch.setattr(api, "_do_request", do_request)
+    await api.async_get_home_status("home-1")
+    _, kwargs = do_request.call_args
+    assert kwargs["data"] == {"home_id": "home-1"}
+
+
+async def test_set_room_thermpoint_payload(api, monkeypatch):
+    """async_set_room_thermpoint builds the full payload with temp/endtime."""
+    do_request = AsyncMock(return_value=(200, _ok_body(), {}))
+    monkeypatch.setattr(api, "_do_request", do_request)
+    await api.async_set_room_thermpoint("home-1", "room-1", mode="manual", temp=21.0, endtime=12345)
+    _, kwargs = do_request.call_args
+    assert kwargs["data"] == {
+        "home_id": "home-1",
+        "room_id": "room-1",
+        "mode": "manual",
+        "temp": 21.0,
+        "endtime": 12345,
+    }
+
+
+async def test_set_room_thermpoint_omits_optionals(api, monkeypatch):
+    """async_set_room_thermpoint omits temp/endtime when not provided."""
+    do_request = AsyncMock(return_value=(200, _ok_body(), {}))
+    monkeypatch.setattr(api, "_do_request", do_request)
+    await api.async_set_room_thermpoint("home-1", "room-1", mode="off")
+    _, kwargs = do_request.call_args
+    assert kwargs["data"] == {"home_id": "home-1", "room_id": "room-1", "mode": "off"}
+
+
+async def test_set_therm_mode_endtime_payload(api, monkeypatch):
+    """async_set_therm_mode forwards endtime when provided."""
+    do_request = AsyncMock(return_value=(200, _ok_body(), {}))
+    monkeypatch.setattr(api, "_do_request", do_request)
+    await api.async_set_therm_mode("home-1", mode="away", endtime=999)
+    _, kwargs = do_request.call_args
+    assert kwargs["data"] == {"home_id": "home-1", "mode": "away", "endtime": 999}
+
+
+async def test_get_schedules_unknown_home_returns_empty(api, monkeypatch):
+    """async_get_schedules returns [] when the home is not in homesdata."""
+    body = {"homes": [{"id": "home-2", "schedules": [{"id": "s2"}]}]}
+    monkeypatch.setattr(api, "_do_request", AsyncMock(return_value=(200, _ok_body(body), {})))
+    assert await api.async_get_schedules("home-1") == []

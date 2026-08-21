@@ -8,7 +8,6 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DATA_COORDINATOR, DOMAIN
 from .coordinator import NetatmoDataUpdateCoordinator
 
 TO_REDACT = {
@@ -40,7 +39,7 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+    coordinator: NetatmoDataUpdateCoordinator = entry.runtime_data.coordinator
 
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),

@@ -22,9 +22,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import NetatmoAPI
 from .const import (
-    DATA_API,
-    DATA_COORDINATOR,
-    DATA_HOME_ID,
     DOMAIN,
     ENTITY_PREFIX,
     MAX_CONSECUTIVE_FAILURES,
@@ -61,8 +58,8 @@ async def async_setup_entry(
         entry: Config entry
         async_add_entities: Callback to add entities
     """
-    coordinator: NetatmoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-    home_id: str = hass.data[DOMAIN][entry.entry_id][DATA_HOME_ID]
+    coordinator: NetatmoDataUpdateCoordinator = entry.runtime_data.coordinator
+    home_id: str = entry.runtime_data.home_id
 
     # Get home data (defensive: a partial payload should add zero entities, not crash)
     homes_data = (coordinator.data or {}).get("homes_data", {}).get("body", {}).get("homes", [])
@@ -386,7 +383,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if temp is None:
             return
 
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
+        api: NetatmoAPI = self.coordinator.api
 
         async def api_call():
             await api.async_set_room_thermpoint(
@@ -408,7 +405,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
+        api: NetatmoAPI = self.coordinator.api
 
         async def api_call():
             if hvac_mode == HVACMode.OFF:
@@ -430,7 +427,7 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set preset mode."""
-        api: NetatmoAPI = self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id][DATA_API]
+        api: NetatmoAPI = self.coordinator.api
 
         # Map HA presets to Netatmo modes
         mode_map = {

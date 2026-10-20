@@ -67,6 +67,16 @@ VERIFY_SETTLE_DELAY = 1  # seconds to wait after a coordinator refresh
 VERIFY_RETRY_BASE_DELAY = 4  # base seconds between verification retries (scaled by attempt)
 VERIFY_MAX_RETRIES = 4  # additional verification attempts after the first
 
+# Manual setpoint duration.
+# Netatmo applies the home's `therm_setpoint_default_duration` whenever
+# setroomthermpoint is called without an explicit endtime; that is the
+# "cooldown" shown in the Netatmo app (90 min on this home). Manual setpoints
+# from HA/Google now send that same duration explicitly, so the override lasts
+# exactly as long as the app's setting — change it in the app, not here.
+MANUAL_SETPOINT_FALLBACK_MINUTES = 90  # used if homesdata omits the setting
+MANUAL_SETPOINT_MAX_MINUTES = 24 * 60  # sanity clamp on a bad API value
+
+
 # Webhook handling
 MAX_WEBHOOK_BODY_BYTES = 256 * 1024  # reject webhook payloads larger than this
 

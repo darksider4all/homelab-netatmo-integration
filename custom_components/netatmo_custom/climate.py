@@ -2,7 +2,9 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 import logging
+import time
 from typing import Any
 
 from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature
@@ -19,11 +21,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .api import NetatmoAPI
 from .const import (
     DOMAIN,
     ENTITY_PREFIX,
+    MANUAL_SETPOINT_FALLBACK_MINUTES,
+    MANUAL_SETPOINT_MAX_MINUTES,
     MAX_CONSECUTIVE_FAILURES,
     MAX_TEMP,
     MIN_TEMP,
@@ -167,6 +172,10 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         self._room = room
         self._home_id = home_id
         self._room_id = room["id"]
+        # Last setpoint applied by the schedule; kept so the governing schedule can
+        # still be identified after a manual override has taken the room out of
+        # schedule mode.
+        self._last_schedule_setpoint: float | None = None
         self._module = module
         self._relay_module_id = relay_module_id
         self._optimistic_preset: str | None = None  # For immediate UI updates
@@ -308,6 +317,10 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if status:
             attrs["heating_power_request"] = status.get("heating_power_request", 0)
             attrs["netatmo_setpoint_mode"] = status.get("therm_setpoint_mode")
+            if status.get("therm_setpoint_end_time"):
+                attrs["netatmo_setpoint_end_time"] = dt_util.as_local(
+                    datetime.fromtimestamp(status["therm_setpoint_end_time"], dt_util.UTC)
+                ).isoformat()
             attrs["anticipating"] = status.get("anticipating", False)
             attrs["open_window"] = status.get("open_window", False)
 
@@ -378,6 +391,133 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
         return False
 
+    def _active_schedules(self) -> tuple[list[dict[str, Any]], str | None]:
+        """Return the schedules governing this room's setpoints, plus the home timezone.
+
+        The homesdata payload does not always carry the active program id, so when
+        it is missing we infer it from the setpoint currently applied by the
+        schedule: any schedule containing a zone with that exact room target is
+        treated as a candidate (the earliest upcoming boundary wins, which errs
+        towards a shorter override rather than a longer one).
+        """
+        homes = ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get(
+            "homes"
+        ) or []
+        home = next((h for h in homes if h.get("id") == self._home_id), None)
+        if not home:
+            return [], None
+
+        schedules = home.get("schedules") or []
+        timezone = home.get("timezone")
+
+        program_id = home.get("therm_program") or home.get("schedule_id")
+        if program_id:
+            active = [s for s in schedules if s.get("id") == program_id]
+            if active:
+                return active, timezone
+            return schedules, timezone
+
+        status = self._get_room_status() or {}
+        if status.get("therm_setpoint_mode") == "schedule":
+            target = status.get("therm_setpoint_temperature")
+            if target is not None:
+                self._last_schedule_setpoint = target
+        else:
+            # Room is under a manual override: fall back to the last scheduled
+            # setpoint so the same schedule is chosen as on the first request.
+            target = self._last_schedule_setpoint
+
+        if target is not None:
+            matched = [
+                sched
+                for sched in schedules
+                if any(
+                    abs((entry.get("temp") or -999) - target) < 0.01
+                    for zone in sched.get("zones") or []
+                    for entry in zone.get("rooms_temp") or []
+                    if entry.get("room_id") == self._room_id
+                )
+            ]
+            if matched:
+                return matched, timezone
+
+        return schedules, timezone
+
+    def _handle_coordinator_update(self) -> None:
+        """Track the schedule setpoint across coordinator refreshes."""
+        status = self._get_room_status() or {}
+        if status.get("therm_setpoint_mode") == "schedule":
+            setpoint = status.get("therm_setpoint_temperature")
+            if setpoint is not None:
+                self._last_schedule_setpoint = setpoint
+        super()._handle_coordinator_update()
+
+    def _next_schedule_boundary(self, now_ts: int) -> int | None:
+        """Return the unix timestamp of the next schedule change, if any."""
+        schedules, timezone = self._active_schedules()
+
+        offsets: list[int] = []
+        for sched in schedules:
+            for entry in sched.get("timetable") or []:
+                offset = entry.get("m_offset")
+                if isinstance(offset, int):
+                    offsets.append(offset)
+        if not offsets:
+            return None
+
+        tz = dt_util.get_time_zone(timezone) if timezone else None
+        if tz is None:
+            tz = dt_util.DEFAULT_TIME_ZONE
+
+        now_local = datetime.fromtimestamp(now_ts, tz)
+        week_start = (now_local - timedelta(days=now_local.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        now_offset = int((now_local - week_start).total_seconds() // 60)
+
+        upcoming: list[int] = []
+        for offset in offsets:
+            for week in (0, 1):
+                candidate = offset + week * 10080
+                if candidate > now_offset:
+                    upcoming.append(candidate)
+                    break
+        if not upcoming:
+            return None
+        return int((week_start + timedelta(minutes=min(upcoming))).timestamp())
+
+    def _manual_setpoint_minutes(self) -> int:
+        """Return the home's configured manual-setpoint duration.
+
+        This is the "cooldown" set in the Netatmo app
+        (`therm_setpoint_default_duration`, 90 minutes on this home).
+        """
+        homes = ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get(
+            "homes"
+        ) or []
+        home = next((h for h in homes if h.get("id") == self._home_id), None)
+        value = (home or {}).get("therm_setpoint_default_duration")
+        if isinstance(value, int | float) and value > 0:
+            return int(min(max(value, 5), MANUAL_SETPOINT_MAX_MINUTES))
+        return MANUAL_SETPOINT_FALLBACK_MINUTES
+
+    def _manual_setpoint_endtime(self) -> int:
+        """Return an explicit endtime for a manual setpoint.
+
+        Without an endtime Netatmo applies the home's default duration anyway and
+        then returns the room to the schedule; sending it explicitly makes the
+        behaviour deterministic and identical to the Netatmo app. A schedule
+        boundary inside the window shortens it, never extends it.
+        """
+        now_ts = int(time.time())
+        duration = self._manual_setpoint_minutes() * 60
+        endtime = now_ts + duration
+        boundary = self._next_schedule_boundary(now_ts)
+        # A boundary less than 5 minutes away is useless as an override window.
+        if boundary is not None and 300 <= boundary - now_ts < duration:
+            return boundary
+        return endtime
+
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         temp = kwargs.get(ATTR_TEMPERATURE)
@@ -385,10 +525,16 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             return
 
         api: NetatmoAPI = self.coordinator.api
+        endtime = self._manual_setpoint_endtime()
+        _LOGGER.debug(
+            "Setting manual setpoint %.1f until %s",
+            temp,
+            dt_util.as_local(datetime.fromtimestamp(endtime, dt_util.UTC)),
+        )
 
         async def api_call():
             await api.async_set_room_thermpoint(
-                self._home_id, self._room_id, mode="manual", temp=temp
+                self._home_id, self._room_id, mode="manual", temp=temp, endtime=endtime
             )
 
         def verify() -> bool:
@@ -414,7 +560,11 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             elif hvac_mode == HVACMode.HEAT:
                 target = self.target_temperature or 19.0
                 await api.async_set_room_thermpoint(
-                    self._home_id, self._room_id, mode="manual", temp=target
+                    self._home_id,
+                    self._room_id,
+                    mode="manual",
+                    temp=target,
+                    endtime=self._manual_setpoint_endtime(),
                 )
             elif hvac_mode == HVACMode.AUTO:
                 await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="home")

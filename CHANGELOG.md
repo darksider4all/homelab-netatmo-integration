@@ -21,6 +21,10 @@ automations are preserved.
   paths, coordinator behaviour, config + reauth flow, webhook handling, and entity logic.
 - Tooling: `ruff`, `mypy`, `pre-commit`, `py.typed`, and a CI workflow running lint + types + tests.
 - `manifest.json` now declares `integration_type: "hub"`.
+- Manual setpoints sent from Home Assistant (including Google Assistant) now carry an explicit
+  `endtime` taken from the home's `therm_setpoint_default_duration` — the same "cooldown" the
+  Netatmo app uses — so an override lasts as long as it does in the app.
+- Climate entities expose `netatmo_setpoint_end_time` so the end of a manual override is visible.
 
 ### Changed
 - Setup failures now raise `ConfigEntryNotReady` so Home Assistant retries automatically (previously
@@ -38,6 +42,10 @@ automations are preserved.
 ### Fixed
 - Removed dead code and an unnecessary `deepcopy` in the webhook coordinator path.
 - Hardened against partial coordinator payloads in climate setup (no more `KeyError`).
+- Temperature changes no longer appear to "bounce back": `setroomthermpoint` previously omitted
+  `endtime`, so Netatmo applied its own room default and dropped the override back to the schedule
+  at a time Home Assistant could not predict. A schedule change inside the window still ends the
+  override, but it can never extend it.
 
 ### Known gaps (Gold tier, planned)
 - Entity-name translations (`translation_key`) for sensors/binary sensors.

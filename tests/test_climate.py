@@ -1,7 +1,10 @@
 """Tests for the Netatmo climate entity mapping logic."""
 
+from datetime import datetime
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from homeassistant.components.climate.const import (
     PRESET_AWAY,
@@ -153,9 +156,12 @@ async def test_set_temperature_uses_coordinator_api(home_status, homes_data):
 
     await entity.async_set_temperature(temperature=21.0)
 
-    api.async_set_room_thermpoint.assert_awaited_once_with(
-        "home-1", "room-1", mode="manual", temp=21.0
-    )
+    kwargs = api.async_set_room_thermpoint.await_args.kwargs
+    assert kwargs["mode"] == "manual"
+    assert kwargs["temp"] == 21.0
+    # An explicit endtime must be sent, otherwise Netatmo applies its own
+    # (shorter, non-deterministic) default and the override silently reverts.
+    assert kwargs["endtime"] > time.time()
 
 
 @pytest.mark.parametrize(
@@ -375,9 +381,10 @@ async def test_set_temperature_verifies_applied_value(home_status, homes_data, z
     entity = _entity_with_api(home_status, homes_data, api=api)
     # Fixture target temperature is 20.0; matching it verifies on the first attempt.
     await entity.async_set_temperature(temperature=20.0)
-    api.async_set_room_thermpoint.assert_awaited_once_with(
-        "home-1", "room-1", mode="manual", temp=20.0
-    )
+    kwargs = api.async_set_room_thermpoint.await_args.kwargs
+    assert kwargs["mode"] == "manual"
+    assert kwargs["temp"] == 20.0
+    assert kwargs["endtime"] > time.time()
 
 
 async def test_set_temperature_refreshes_when_unverified(home_status, homes_data, zero_delays):
@@ -429,6 +436,90 @@ async def test_set_preset_mode_full_verification(
         }[preset],
     )
     assert entity._optimistic_preset is None
+
+
+# --- Manual setpoint duration (Netatmo "cooldown") ---
+
+
+def _homes_with_schedule(homes_data, *, duration=None, offsets=None, room_temp=20.0):
+    """Attach schedules (and optionally the default duration) to the fixture home."""
+    home = homes_data["body"]["homes"][0]
+    home["timezone"] = "Europe/Bucharest"
+    if duration is not None:
+        home["therm_setpoint_default_duration"] = duration
+    if offsets is not None:
+        home["schedules"] = [
+            {
+                "id": "sched-1",
+                "name": "Test schedule",
+                "default": False,
+                "zones": [
+                    {
+                        "id": 0,
+                        "name": "Comfort",
+                        "rooms_temp": [{"room_id": "room-1", "temp": room_temp}],
+                    }
+                ],
+                "timetable": [{"zone_id": 0, "m_offset": offset} for offset in offsets],
+            }
+        ]
+    return homes_data
+
+
+def test_manual_setpoint_minutes_uses_home_setting(home_status, homes_data):
+    """The app's therm_setpoint_default_duration drives the override window."""
+    _homes_with_schedule(homes_data, duration=120)
+    assert _make_entity(home_status, homes_data)._manual_setpoint_minutes() == 120
+
+
+def test_manual_setpoint_minutes_falls_back(home_status, homes_data):
+    """Without the home setting the documented 90-minute fallback applies."""
+    assert _make_entity(home_status, homes_data)._manual_setpoint_minutes() == 90
+
+
+def test_manual_setpoint_minutes_clamped(home_status, homes_data):
+    """An absurd API value is clamped instead of producing a year-long override."""
+    _homes_with_schedule(homes_data, duration=10**6)
+    assert _make_entity(home_status, homes_data)._manual_setpoint_minutes() == 24 * 60
+
+
+def test_next_schedule_boundary_from_timetable(home_status, homes_data):
+    """Timetable offsets (minutes since local Monday 00:00) resolve to the next edge."""
+    _homes_with_schedule(homes_data, offsets=[0, 660, 1440])
+    entity = _make_entity(home_status, homes_data)
+    monday_10 = datetime(2026, 10, 19, 10, 0, tzinfo=ZoneInfo("Europe/Bucharest"))
+    now_ts = int(monday_10.timestamp())
+    # Next offset is 660 (Monday 11:00 local), one hour after "now".
+    assert entity._next_schedule_boundary(now_ts) == now_ts + 3600
+
+
+def test_manual_setpoint_endtime_uses_duration(home_status, homes_data):
+    """No boundary inside the window: the full configured duration is used."""
+    _homes_with_schedule(homes_data, duration=90, offsets=[0])
+    entity = _make_entity(home_status, homes_data)
+    start = int(time.time())
+    endtime = entity._manual_setpoint_endtime()
+    assert start + 90 * 60 <= endtime <= int(time.time()) + 90 * 60
+
+
+def test_manual_setpoint_endtime_shortened_by_boundary(home_status, homes_data):
+    """A schedule change inside the window always wins over the duration."""
+    _homes_with_schedule(homes_data, duration=90, offsets=[0, 660])
+    entity = _make_entity(home_status, homes_data)
+    monday_10 = datetime(2026, 10, 19, 10, 0, tzinfo=ZoneInfo("Europe/Bucharest"))
+    now_ts = int(monday_10.timestamp())
+    with patch("custom_components.netatmo_custom.climate.time.time", return_value=now_ts):
+        assert entity._manual_setpoint_endtime() == now_ts + 3600
+
+
+def test_manual_setpoint_endtime_ignores_imminent_boundary(home_status, homes_data):
+    """A boundary a few minutes away is ignored so the override is usable."""
+    _homes_with_schedule(homes_data, duration=90, offsets=[0, 604])
+    entity = _make_entity(home_status, homes_data)
+    monday_10 = datetime(2026, 10, 19, 10, 0, tzinfo=ZoneInfo("Europe/Bucharest"))
+    now_ts = int(monday_10.timestamp())
+    with patch("custom_components.netatmo_custom.climate.time.time", return_value=now_ts):
+        assert entity._manual_setpoint_endtime() == now_ts + 90 * 60
 
 
 async def test_set_preset_mode_failed_verification_logs_error(

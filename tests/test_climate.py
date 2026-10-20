@@ -535,3 +535,128 @@ async def test_set_preset_mode_failed_verification_logs_error(
         await entity.async_set_preset_mode(PRESET_AWAY)
     assert "Failed to verify preset change to away" in caplog.text
     assert entity._optimistic_preset is None
+
+
+# --- Post-write setpoint guard (cloud cancels a manual setpoint seconds later) ---
+
+
+@pytest.fixture
+def fast_guard():
+    """Make the post-write guard poll immediately."""
+    with (
+        patch("custom_components.netatmo_custom.climate.SETPOINT_GUARD_POLL_SECONDS", 0),
+        patch("custom_components.netatmo_custom.climate.SETPOINT_GUARD_WINDOW_SECONDS", 5),
+    ):
+        yield
+
+
+def test_optimistic_temperature_takes_priority(entity):
+    """A just-written setpoint overrides the cloud value while its window lasts."""
+    entity._optimistic_temperature = 24.0
+    entity._optimistic_temperature_until = time.time() + 30
+    assert entity.target_temperature == 24.0
+
+
+def test_optimistic_temperature_expires(entity):
+    """Once the window lapses the cloud value is authoritative again."""
+    entity._optimistic_temperature = 24.0
+    entity._optimistic_temperature_until = time.time() - 1
+    assert entity.target_temperature == 20.0
+
+
+def test_coordinator_update_clears_optimistic_when_cloud_agrees(home_status, homes_data):
+    """The optimistic value is dropped as soon as the cloud reports it."""
+    entity = _make_entity(home_status, homes_data)
+    entity.async_write_ha_state = MagicMock()
+    entity._optimistic_temperature = 24.0
+    entity._optimistic_temperature_until = time.time() + 30
+    _set_room_mode(home_status, "manual")
+    home_status["body"]["home"]["rooms"][0]["therm_setpoint_temperature"] = 24.0
+
+    entity._handle_coordinator_update()
+
+    assert entity._optimistic_temperature is None
+
+
+def test_coordinator_update_keeps_optimistic_while_cloud_lags(home_status, homes_data):
+    """A stale schedule report inside the window must not clear the optimistic value."""
+    entity = _make_entity(home_status, homes_data)
+    entity.async_write_ha_state = MagicMock()
+    entity._optimistic_temperature = 24.0
+    entity._optimistic_temperature_until = time.time() + 30
+
+    entity._handle_coordinator_update()
+
+    assert entity.target_temperature == 24.0
+
+
+async def test_set_temperature_sets_optimistic_value(home_status, homes_data):
+    """set_temperature shows the requested value immediately."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    _run_api_call_verification(entity)
+
+    await entity.async_set_temperature(temperature=24.0)
+
+    assert entity.target_temperature == 24.0
+
+
+async def test_set_temperature_verification_uses_raw_cloud_value(
+    home_status, homes_data, zero_delays
+):
+    """The optimistic value must never make an unapplied write look verified."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    entity.async_write_ha_state = MagicMock()
+
+    # Cloud stays at 20.0 while 99.0 is requested: every attempt must fail.
+    await entity.async_set_temperature(temperature=99.0)
+
+    assert api.async_set_room_thermpoint.await_count == 5  # 1 + VERIFY_MAX_RETRIES
+
+
+async def test_guard_reasserts_once_when_cloud_cancels(home_status, homes_data, fast_guard, caplog):
+    """A room back on its schedule inside the window gets one re-assert."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    entity.async_write_ha_state = MagicMock()
+    _set_room_mode(home_status, "schedule")
+    entity._setpoint_generation = 3
+
+    with caplog.at_level("WARNING", logger="custom_components.netatmo_custom.climate"):
+        await entity._async_guard_setpoint(24.0, 1893456000, 3)
+
+    api.async_set_room_thermpoint.assert_awaited_once_with(
+        "home-1", "room-1", mode="manual", temp=24.0, endtime=1893456000
+    )
+    assert entity.coordinator.async_request_refresh.await_count == 1
+    assert "re-asserting once" in caplog.text
+
+
+async def test_guard_leaves_a_held_setpoint_alone(home_status, homes_data, fast_guard):
+    """A manual setpoint that survived the window is not touched."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    _set_room_mode(home_status, "manual")
+    entity._setpoint_generation = 1
+
+    await entity._async_guard_setpoint(24.0, 1893456000, 1)
+
+    api.async_set_room_thermpoint.assert_not_awaited()
+
+
+async def test_guard_exits_when_a_newer_write_supersedes_it(home_status, homes_data, fast_guard):
+    """A guard from an older write must not fight a newer one."""
+    api = MagicMock()
+    api.async_set_room_thermpoint = AsyncMock(return_value=None)
+    entity = _entity_with_api(home_status, homes_data, api=api)
+    _set_room_mode(home_status, "schedule")
+    entity._setpoint_generation = 2
+
+    await entity._async_guard_setpoint(24.0, 1893456000, 1)
+
+    api.async_set_room_thermpoint.assert_not_awaited()

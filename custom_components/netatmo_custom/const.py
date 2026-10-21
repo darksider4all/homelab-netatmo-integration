@@ -76,6 +76,17 @@ VERIFY_MAX_RETRIES = 4  # additional verification attempts after the first
 MANUAL_SETPOINT_FALLBACK_MINUTES = 90  # used if homesdata omits the setting
 MANUAL_SETPOINT_MAX_MINUTES = 24 * 60  # sanity clamp on a bad API value
 
+# Post-write setpoint guard.
+# Netatmo has been observed to accept a manual setpoint, report the room back in
+# "schedule" mode ~10 s later and stop the boiler (2026-10-20: 24 °C at 22:37:18,
+# schedule/15 °C at 22:37:28). The verification loop only checks the value at
+# write time, so such a cancellation was shown verbatim until the next command.
+# Hold the requested value for the guard window and, if the room falls back to
+# its schedule inside it, re-assert the setpoint once (never in a loop).
+SETPOINT_GUARD_WINDOW_SECONDS = 60
+SETPOINT_GUARD_POLL_SECONDS = 5
+OPTIMISTIC_TEMP_HOLD_SECONDS = 60
+
 
 # Webhook handling
 MAX_WEBHOOK_BODY_BYTES = 256 * 1024  # reject webhook payloads larger than this

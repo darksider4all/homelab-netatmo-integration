@@ -32,7 +32,10 @@ from .const import (
     MAX_CONSECUTIVE_FAILURES,
     MAX_TEMP,
     MIN_TEMP,
+    OPTIMISTIC_TEMP_HOLD_SECONDS,
     PRESET_FROST_GUARD,
+    SETPOINT_GUARD_POLL_SECONDS,
+    SETPOINT_GUARD_WINDOW_SECONDS,
     TEMP_STEP,
     VERIFY_MAX_RETRIES,
     VERIFY_PROPAGATION_DELAY,
@@ -179,6 +182,15 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         self._module = module
         self._relay_module_id = relay_module_id
         self._optimistic_preset: str | None = None  # For immediate UI updates
+        # Setpoint written by the user but not yet confirmed by the cloud. Kept
+        # for a short window so an immediate cloud cancellation cannot snap the
+        # UI (and Google's state report) back to the schedule value.
+        self._optimistic_temperature: float | None = None
+        self._optimistic_temperature_until: float = 0.0
+        # Incremented on every user setpoint write; a guard task from an older
+        # write exits as soon as it notices a newer one.
+        self._setpoint_generation: int = 0
+        self._setpoint_guard_task: asyncio.Task | None = None
 
         # Get module info
         module_id = module["id"] if module else room["id"]
@@ -229,9 +241,26 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
-        """Return target temperature."""
+        """Return target temperature.
+
+        A value just written by the user wins for a short window, so a cloud
+        report that still carries the schedule setpoint cannot make the UI (or a
+        Google state query) bounce back to it.
+        """
+        if (
+            self._optimistic_temperature is not None
+            and time.time() < self._optimistic_temperature_until
+        ):
+            return self._optimistic_temperature
         status = self._get_room_status()
         return status.get("therm_setpoint_temperature") if status else None
+
+    def _set_optimistic_temperature(self, temperature: float) -> None:
+        """Show a just-written setpoint immediately, before the cloud confirms it."""
+        self._optimistic_temperature = temperature
+        self._optimistic_temperature_until = time.time() + OPTIMISTIC_TEMP_HOLD_SECONDS
+        if getattr(self, "hass", None) is not None:
+            self.async_write_ha_state()
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -450,6 +479,20 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             setpoint = status.get("therm_setpoint_temperature")
             if setpoint is not None:
                 self._last_schedule_setpoint = setpoint
+
+        # Drop the optimistic value as soon as the cloud agrees, or when its
+        # window lapses; never mask a genuine state indefinitely.
+        if self._optimistic_temperature is not None:
+            cloud_temp = status.get("therm_setpoint_temperature")
+            agreed = (
+                status.get("therm_setpoint_mode") == "manual"
+                and cloud_temp is not None
+                and abs(cloud_temp - self._optimistic_temperature) < TEMP_STEP
+            )
+            if agreed or time.time() >= self._optimistic_temperature_until:
+                self._optimistic_temperature = None
+                self._optimistic_temperature_until = 0.0
+
         super()._handle_coordinator_update()
 
     def _next_schedule_boundary(self, now_ts: int) -> int | None:
@@ -532,13 +575,20 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             dt_util.as_local(datetime.fromtimestamp(endtime, dt_util.UTC)),
         )
 
+        self._setpoint_generation += 1
+        generation = self._setpoint_generation
+        self._set_optimistic_temperature(temp)
+
         async def api_call():
             await api.async_set_room_thermpoint(
                 self._home_id, self._room_id, mode="manual", temp=temp, endtime=endtime
             )
 
         def verify() -> bool:
-            current_temp = self.target_temperature
+            # Read the raw cloud value, never the optimistic one: verification
+            # has to prove the cloud accepted the write, not that the UI shows it.
+            status = self._get_room_status() or {}
+            current_temp = status.get("therm_setpoint_temperature")
             # Use TEMP_STEP as tolerance since that's the smallest increment
             return current_temp is not None and abs(current_temp - temp) < TEMP_STEP
 
@@ -549,22 +599,34 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if not success:
             # Force one more refresh attempt
             await self.coordinator.async_request_refresh()
+            return
+
+        self._async_start_setpoint_guard(temp, endtime, generation)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
         api: NetatmoAPI = self.coordinator.api
 
+        heat_target: float | None = None
+        heat_endtime: int | None = None
+        generation: int | None = None
+        if hvac_mode == HVACMode.HEAT:
+            heat_target = self.target_temperature or 19.0
+            heat_endtime = self._manual_setpoint_endtime()
+            self._setpoint_generation += 1
+            generation = self._setpoint_generation
+            self._set_optimistic_temperature(heat_target)
+
         async def api_call():
             if hvac_mode == HVACMode.OFF:
                 await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="off")
             elif hvac_mode == HVACMode.HEAT:
-                target = self.target_temperature or 19.0
                 await api.async_set_room_thermpoint(
                     self._home_id,
                     self._room_id,
                     mode="manual",
-                    temp=target,
-                    endtime=self._manual_setpoint_endtime(),
+                    temp=heat_target,
+                    endtime=heat_endtime,
                 )
             elif hvac_mode == HVACMode.AUTO:
                 await api.async_set_room_thermpoint(self._home_id, self._room_id, mode="home")
@@ -572,9 +634,17 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         def verify() -> bool:
             return self.hvac_mode == hvac_mode
 
-        await self._async_call_api_with_verification(
+        success = await self._async_call_api_with_verification(
             api_call, verify, f"Set HVAC mode to {hvac_mode}"
         )
+
+        if (
+            success
+            and heat_target is not None
+            and heat_endtime is not None
+            and generation is not None
+        ):
+            self._async_start_setpoint_guard(heat_target, heat_endtime, generation)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set preset mode."""
@@ -623,6 +693,73 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
             # Clear optimistic state regardless of outcome
             self._optimistic_preset = None
             self.async_write_ha_state()
+
+    def _async_start_setpoint_guard(
+        self, temperature: float, endtime: int, generation: int
+    ) -> None:
+        """Schedule the bounded post-write guard for this setpoint."""
+        if self._setpoint_guard_task is not None and not self._setpoint_guard_task.done():
+            self._setpoint_guard_task.cancel()
+
+        coro = self._async_guard_setpoint(temperature, endtime, generation)
+        hass = getattr(self, "hass", None)
+        if hass is None:
+            coro.close()
+            return
+        self._setpoint_guard_task = hass.async_create_task(coro)
+
+    async def _async_guard_setpoint(
+        self, temperature: float, endtime: int, generation: int
+    ) -> None:
+        """Re-assert a manual setpoint once if the cloud cancels it immediately.
+
+        Netatmo has been seen to accept setroomthermpoint, report the room back
+        in "schedule" mode ~10 s later and stop the boiler. Verification only
+        checks the write itself, so the cancellation stayed visible until the
+        next user action. This watches the short window after a write and
+        re-sends the setpoint exactly once; a newer write supersedes it.
+        """
+        started = time.monotonic()
+        deadline = started + SETPOINT_GUARD_WINDOW_SECONDS
+        try:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(SETPOINT_GUARD_POLL_SECONDS)
+                if generation != self._setpoint_generation:
+                    return
+                status = self._get_room_status() or {}
+                if status.get("therm_setpoint_mode") != "schedule":
+                    return
+
+                _LOGGER.warning(
+                    "Netatmo cancelled the manual setpoint (%.1f °C) %.0f s after "
+                    "accepting it; re-asserting once",
+                    temperature,
+                    time.monotonic() - started,
+                )
+                await self.coordinator.api.async_set_room_thermpoint(
+                    self._home_id,
+                    self._room_id,
+                    mode="manual",
+                    temp=temperature,
+                    endtime=endtime,
+                )
+                await self.coordinator.async_request_refresh()
+                self._set_optimistic_temperature(temperature)
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # a guard must never break the entity
+            _LOGGER.warning("Setpoint guard failed: %s", err)
+        finally:
+            if self._setpoint_guard_task is asyncio.current_task():
+                self._setpoint_guard_task = None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel a pending setpoint guard when the entity is removed."""
+        if self._setpoint_guard_task is not None and not self._setpoint_guard_task.done():
+            self._setpoint_guard_task.cancel()
+            self._setpoint_guard_task = None
+        await super().async_will_remove_from_hass()
 
     def _get_room_status(self) -> dict | None:
         """Get room status from coordinator data."""

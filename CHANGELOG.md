@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
+- Devices are linked to the relay by `via_device_id` instead of the deprecated `via_device`
+  identifier tuple, which Home Assistant removes in 2027.8. It logged three frame warnings on
+  every setup (climate, sensor, binary_sensor). The relay device id is captured when the relay is
+  pre-registered, so nothing else in the device tree changes.
 - A manual setpoint cancelled by Netatmo seconds after it was accepted no longer leaves the entity
   (and Google's state report) showing the schedule value. The requested temperature is held for a
   60-second window, and if the room falls back to `schedule` inside it the setpoint is re-asserted

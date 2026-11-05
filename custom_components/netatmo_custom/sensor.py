@@ -15,6 +15,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import relay_device_id
 from .const import (
     DOMAIN,
     ENTITY_PREFIX,
@@ -259,8 +260,8 @@ class NetatmoBatteryLevelSensor(CoordinatorEntity, SensorEntity):
             name=module_name,
             manufacturer="Netatmo",
             model=DEVICE_TYPES.get(module_type, module_type),
-            via_device=(DOMAIN, relay_module_id)
-            if module_type != "NAPlug" and relay_module_id
+            via_device_id=relay_device_id(self.coordinator.hass, relay_module_id)
+            if module_type != "NAPlug"
             else None,
         )
 

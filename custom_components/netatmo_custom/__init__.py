@@ -29,6 +29,19 @@ from .webhook import async_setup_webhook, async_unregister_webhook
 _LOGGER = logging.getLogger(__name__)
 
 
+def relay_device_id(hass: HomeAssistant, relay_module_id: str | None) -> str | None:
+    """Return the registry id of the relay a module hangs from.
+
+    `via_device` (an identifier tuple) is deprecated and stops working in HA 2027.8;
+    the registry now only accepts the parent's device id, so the id captured when the
+    relay device was registered is looked up here instead.
+    """
+    if not relay_module_id:
+        return None
+    store = hass.data.get(DOMAIN) or {}
+    return (store.get("relay_devices") or {}).get(relay_module_id)
+
+
 @dataclass
 class NetatmoRuntimeData:
     """Runtime data attached to a loaded config entry."""
@@ -74,14 +87,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()
 
-        # Pre-register relay devices so via_device references don't warn.
+        # Pre-register relay devices so modules can hang off them by device id.
         device_registry = dr.async_get(hass)
         homes_data = coordinator.data.get("homes_data", {}).get("body", {}).get("homes", [])
+        relay_devices: dict[str, str] = {}
         for home in homes_data:
             if home["id"] == home_id:
                 for module in home.get("modules", []):
                     if module.get("type") == "NAPlug":
-                        device_registry.async_get_or_create(
+                        relay = device_registry.async_get_or_create(
                             config_entry_id=entry.entry_id,
                             identifiers={(DOMAIN, module["id"])},
                             manufacturer="Netatmo",
@@ -89,7 +103,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             name=module.get("name", "Netatmo Relay"),
                             configuration_url="https://my.netatmo.com",
                         )
+                        relay_devices[module["id"]] = relay.id
                 break
+
+        # Merge rather than replace: a second home (second config entry) must not
+        # drop the first home's relay ids, or those modules would lose their parent.
+        hass.data.setdefault(DOMAIN, {}).setdefault("relay_devices", {}).update(relay_devices)
 
         # Store runtime data on the config entry (ConfigEntry.runtime_data).
         entry.runtime_data = NetatmoRuntimeData(coordinator=coordinator, api=api, home_id=home_id)

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [1.3.3] - 2026-11-07
+
 ### Fixed
 - Devices are linked to the relay by `via_device_id` instead of the deprecated `via_device`
   identifier tuple, which Home Assistant removes in 2027.8. It logged three frame warnings on

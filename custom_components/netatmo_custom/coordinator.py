@@ -1,5 +1,6 @@
 """Data update coordinator for Netatmo Custom integration."""
 
+import contextlib
 from datetime import timedelta
 import logging
 import time
@@ -84,6 +85,25 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
 
         self.update_interval = timedelta(seconds=new_interval)
 
+    def _publish_fault(self, kind: str, detail: str = "") -> None:
+        """Expose the current failure class as sensor.netatmo_fault_class.
+
+        Deliberately a raw state write rather than an entity class: this must work
+        even while the config entry is failing setup, which is exactly when the
+        entities do not exist.
+        """
+        # A bare except here is deliberate: diagnostics must never break a poll.
+        with contextlib.suppress(Exception):
+            self.hass.states.async_set(
+                "sensor.netatmo_fault_class",
+                kind,
+                {
+                    "friendly_name": "Netatmo Fault Class",
+                    "icon": "mdi:cloud-alert",
+                    "detail": detail[:200],
+                },
+            )
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Netatmo API.
 
@@ -101,6 +121,7 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             # Successful update - check if we're recovering from failures
             previous_failures = self._consecutive_update_failures
             self._last_successful_update = time.time()
+            self._publish_fault("cloud_ok")
             self._adjust_update_interval(success=True)
 
             # Log recovery if we had coordinator-level failures
@@ -117,6 +138,7 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             }
 
         except NetatmoAuthError as err:
+            self._publish_fault("auth_error", str(err))
             # Auth errors need reauth, not retry: raising ConfigEntryAuthFailed
             # makes Home Assistant start the reauthentication flow.
             self._adjust_update_interval(success=False)
@@ -124,6 +146,28 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             raise ConfigEntryAuthFailed(str(err)) from err
 
         except NetatmoAPIError as err:
+            _msg = str(err)
+            _low = _msg.lower()
+            if "server error 5" in _low or " 5xx" in _low:
+                _kind = "cloud_error"
+            elif "rate limited" in _low:
+                _kind = "rate_limited"
+            elif any(
+                w in _low
+                for w in (
+                    "cannot connect",
+                    "timeout",
+                    "name or service",
+                    "temporary failure",
+                    "connection reset",
+                    "ssl",
+                    "dns",
+                )
+            ):
+                _kind = "network_error"
+            else:
+                _kind = "unknown"
+            self._publish_fault(_kind, _msg)
             self._adjust_update_interval(success=False)
 
             # If we have cached data and haven't failed too many times, return stale data

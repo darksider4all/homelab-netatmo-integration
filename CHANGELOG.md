@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 _Nothing yet._
 
+## [1.3.4] - 2026-11-07
+
+### Added
+- `sensor.netatmo_fault_class` reports why the integration failed, so a caller can tell a
+  local fault from Netatmo's own outage: `cloud_ok`, `cloud_error` (5xx), `network_error`,
+  `rate_limited`, `auth_error`, `unknown`. Written straight to the state machine rather than
+  as an entity, so it is readable while the config entry is failing setup — exactly when the
+  entities do not exist. Without it, every failure looked identical from outside and an
+  automation could not choose between repairing and waiting.
+
 ## [1.3.3] - 2026-11-07
 
 ### Fixed

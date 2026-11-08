@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format is based on
 
 _Nothing yet._
 
+## [1.3.5] - 2026-11-08
+
+### Added
+- `climate` entities expose the schedule the home is following, as the attributes
+  `selected_schedule` (its name) and `selected_schedule_id`. Previously the schedule could be
+  changed from Home Assistant but never read back, so a switch made in the Netatmo app was
+  invisible to automations and to a dashboard selector. The active programme comes from the
+  home payload, with the same inference the setpoint logic already uses when the payload does
+  not name it. A home without schedules gets neither attribute.
+
+### Removed
+- A stray editor backup (`climate.py.bak-i16`) that was committed by mistake and shipped in
+  1.3.4. It was never imported; it is gone so the tree matches what runs.
+
 ## [1.3.4] - 2026-11-07
 
 ### Added

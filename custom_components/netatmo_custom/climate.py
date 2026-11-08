@@ -363,6 +363,14 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
         attrs["consecutive_failures"] = self.coordinator.consecutive_failures
 
+        # #16: the schedule this home follows, so a change made in the Netatmo app
+        # shows up here without waiting for a manual override to expire.
+        schedule_id, schedule_name = self._selected_schedule()
+        if schedule_id:
+            attrs["selected_schedule_id"] = schedule_id
+        if schedule_name:
+            attrs["selected_schedule"] = schedule_name
+
         return attrs
 
     @property
@@ -420,6 +428,34 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
 
         _LOGGER.error(f"{description} failed after {max_retries + 1} attempts")
         return False
+
+    def _selected_schedule(self) -> tuple[str | None, str | None]:
+        """Return the schedule this home is following, as (id, name).
+
+        homesdata normally carries ``therm_program`` (older payloads: ``schedule_id``);
+        when it is missing we reuse the same inference the setpoint logic already uses,
+        so the attribute is populated either way. Feature request #16: without it Home
+        Assistant never learns that someone switched the schedule in the Netatmo app.
+        """
+        homes = (
+            ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get("homes")
+            or []
+        )
+        home = next((h for h in homes if h.get("id") == self._home_id), None)
+        if not home:
+            return None, None
+
+        schedules = home.get("schedules") or []
+        by_id = {sched.get("id"): sched for sched in schedules if sched.get("id")}
+        program_id = home.get("therm_program") or home.get("schedule_id")
+        if program_id and program_id in by_id:
+            return program_id, by_id[program_id].get("name")
+
+        inferred, _timezone = self._active_schedules()
+        for sched in inferred:
+            if sched.get("id"):
+                return sched.get("id"), sched.get("name")
+        return (program_id, None) if program_id else (None, None)
 
     def _active_schedules(self) -> tuple[list[dict[str, Any]], str | None]:
         """Return the schedules governing this room's setpoints, plus the home timezone.

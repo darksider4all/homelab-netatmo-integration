@@ -305,3 +305,33 @@ async def test_get_schedules_unknown_home_returns_empty(api, monkeypatch):
     body = {"homes": [{"id": "home-2", "schedules": [{"id": "s2"}]}]}
     monkeypatch.setattr(api, "_do_request", AsyncMock(return_value=(200, _ok_body(body), {})))
     assert await api.async_get_schedules("home-1") == []
+
+
+async def test_add_webhook_posts_the_public_url(api, monkeypatch):
+    """addwebhook carries the URL Netatmo should push to (#11)."""
+    calls = []
+
+    async def fake_request(method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(api, "async_request", fake_request)
+    await api.async_add_webhook("https://ha.example.test/api/webhook/abc")
+
+    assert calls == [
+        ("POST", "addwebhook", {"data": {"url": "https://ha.example.test/api/webhook/abc"}})
+    ]
+
+
+async def test_drop_webhook_clears_the_registration(api, monkeypatch):
+    """dropwebhook takes the API's app_types scope, not a URL (#11)."""
+    calls = []
+
+    async def fake_request(method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(api, "async_request", fake_request)
+    await api.async_drop_webhook()
+
+    assert calls == [("POST", "dropwebhook", {"data": {"app_types": "app_security"}})]

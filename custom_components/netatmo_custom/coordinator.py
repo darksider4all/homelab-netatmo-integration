@@ -11,7 +11,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import NetatmoAPI, NetatmoAPIError, NetatmoAuthError
-from .const import DOMAIN, UPDATE_INTERVAL
+from .const import DOMAIN, UPDATE_INTERVAL, WEBHOOK_RECONCILE_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,6 +84,16 @@ class NetatmoDataUpdateCoordinator(DataUpdateCoordinator):
             )
 
         self.update_interval = timedelta(seconds=new_interval)
+
+    def enable_reconcile_polling(self) -> None:
+        """Slow the poller now that webhooks deliver events (#11).
+
+        Events still force an immediate refresh through async_handle_webhook; this
+        only lowers the floor for the timer that catches a missed push.
+        """
+        self._base_update_interval = WEBHOOK_RECONCILE_INTERVAL
+        if not self.webhook_active:
+            self.update_interval = timedelta(seconds=WEBHOOK_RECONCILE_INTERVAL)
 
     def _publish_fault(self, kind: str, detail: str = "") -> None:
         """Expose the current failure class as sensor.netatmo_fault_class.

@@ -16,6 +16,8 @@ ENDPOINT_HOMESDATA = "homesdata"
 ENDPOINT_HOMESTATUS = "homestatus"
 ENDPOINT_SETROOMTHERMPOINT = "setroomthermpoint"
 ENDPOINT_SETTHERMMODE = "setthermmode"
+ENDPOINT_ADDWEBHOOK = "addwebhook"
+ENDPOINT_DROPWEBHOOK = "dropwebhook"
 
 # Platforms
 PLATFORMS = ["climate", "sensor", "binary_sensor"]
@@ -60,6 +62,8 @@ ENTITY_PREFIX = "netatmo"
 
 # Update intervals
 UPDATE_INTERVAL = 60  # seconds
+# Once Netatmo pushes events, polling only reconciles (#11).
+WEBHOOK_RECONCILE_INTERVAL = 300  # seconds
 
 # Climate state-change verification (Netatmo can be slow to apply setpoints)
 VERIFY_PROPAGATION_DELAY = 4  # seconds to wait before re-reading after an API call

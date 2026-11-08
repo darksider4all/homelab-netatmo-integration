@@ -660,3 +660,55 @@ async def test_guard_exits_when_a_newer_write_supersedes_it(home_status, homes_d
     await entity._async_guard_setpoint(24.0, 1893456000, 1)
 
     api.async_set_room_thermpoint.assert_not_awaited()
+
+
+# --- #16: the active schedule must be visible on the entity -------------------
+
+
+def _with_schedules(homes_data, schedules, program_id=None):
+    home = homes_data["body"]["homes"][0]
+    home["schedules"] = schedules
+    if program_id is not None:
+        home["therm_program"] = program_id
+    return homes_data
+
+
+SCHEDULES = [
+    {
+        "id": "sched-home",
+        "name": "Home",
+        "zones": [{"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 20.0}]}],
+    },
+    {
+        "id": "sched-away",
+        "name": "Away",
+        "zones": [{"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 17.0}]}],
+    },
+]
+
+
+def test_selected_schedule_is_exposed_from_therm_program(home_status, homes_data):
+    """The active program id and its name land on the entity (#16)."""
+    entity = _make_entity(home_status, _with_schedules(homes_data, SCHEDULES, "sched-away"))
+    attrs = entity.extra_state_attributes
+    assert attrs["selected_schedule_id"] == "sched-away"
+    assert attrs["selected_schedule"] == "Away"
+
+
+def test_selected_schedule_falls_back_to_inference(home_status, homes_data):
+    """With no therm_program in the payload the entity still names a schedule."""
+    data = _with_schedules(homes_data, SCHEDULES)
+    data["body"]["homes"][0].pop("therm_program", None)
+    _set_room_mode(home_status, "schedule")
+    entity = _make_entity(home_status, data)
+    attrs = entity.extra_state_attributes
+    assert attrs.get("selected_schedule_id") in {"sched-home", "sched-away"}
+    assert attrs.get("selected_schedule") in {"Home", "Away"}
+
+
+def test_no_schedules_means_no_schedule_attributes(home_status, homes_data):
+    """A home without schedules must not grow empty attributes."""
+    entity = _make_entity(home_status, homes_data)
+    attrs = entity.extra_state_attributes
+    assert "selected_schedule_id" not in attrs
+    assert "selected_schedule" not in attrs

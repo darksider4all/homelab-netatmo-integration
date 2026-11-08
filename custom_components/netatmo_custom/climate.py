@@ -437,10 +437,9 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         so the attribute is populated either way. Feature request #16: without it Home
         Assistant never learns that someone switched the schedule in the Netatmo app.
         """
-        homes = (
-            ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get("homes")
-            or []
-        )
+        homes = ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get(
+            "homes"
+        ) or []
         home = next((h for h in homes if h.get("id") == self._home_id), None)
         if not home:
             return None, None

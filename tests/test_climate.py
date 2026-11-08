@@ -664,6 +664,7 @@ async def test_guard_exits_when_a_newer_write_supersedes_it(home_status, homes_d
 
 # --- #16: the active schedule must be visible on the entity -------------------
 
+
 def _with_schedules(homes_data, schedules, program_id=None):
     home = homes_data["body"]["homes"][0]
     home["schedules"] = schedules
@@ -673,10 +674,16 @@ def _with_schedules(homes_data, schedules, program_id=None):
 
 
 SCHEDULES = [
-    {"id": "sched-home", "name": "Home", "zones": [
-        {"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 20.0}]}]},
-    {"id": "sched-away", "name": "Away", "zones": [
-        {"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 17.0}]}]},
+    {
+        "id": "sched-home",
+        "name": "Home",
+        "zones": [{"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 20.0}]}],
+    },
+    {
+        "id": "sched-away",
+        "name": "Away",
+        "zones": [{"id": "zone-0", "rooms_temp": [{"room_id": "room-1", "temp": 17.0}]}],
+    },
 ]
 
 

@@ -12,6 +12,8 @@ from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .const import (
     API_BASE_URL,
+    ENDPOINT_ADDWEBHOOK,
+    ENDPOINT_DROPWEBHOOK,
     ENDPOINT_HOMESDATA,
     ENDPOINT_HOMESTATUS,
     ENDPOINT_SETROOMTHERMPOINT,
@@ -360,6 +362,22 @@ class NetatmoAPI:
             data["schedule_id"] = schedule_id
 
         return await self.async_request("POST", ENDPOINT_SETTHERMMODE, data=data)
+
+    async def async_add_webhook(self, webhook_url: str) -> None:
+        """Ask Netatmo to push events to webhook_url.
+
+        Netatmo keeps one registration per account and suspends a URL that stops
+        answering, so this is re-asserted on every setup (#11).
+        """
+        await self.async_request("POST", ENDPOINT_ADDWEBHOOK, data={"url": webhook_url})
+
+    async def async_drop_webhook(self) -> None:
+        """Remove the account's webhook registration.
+
+        app_types is the API's own vocabulary for the registration scope; there is
+        no per-URL drop, the account has exactly one (#11).
+        """
+        await self.async_request("POST", ENDPOINT_DROPWEBHOOK, data={"app_types": "app_security"})
 
     async def async_get_schedules(self, home_id: str) -> list[dict[str, Any]]:
         """Get available schedules from homesdata.

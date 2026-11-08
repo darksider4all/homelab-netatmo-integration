@@ -1,5 +1,6 @@
 """Netatmo Custom Thermostat integration."""
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 import logging
@@ -27,6 +28,29 @@ from .coordinator import NetatmoDataUpdateCoordinator
 from .webhook import async_setup_webhook, async_unregister_webhook
 
 _LOGGER = logging.getLogger(__name__)
+
+WEBHOOK_REGISTER_ATTEMPTS = 2
+WEBHOOK_REGISTER_RETRY_DELAY = 5  # seconds
+
+
+async def _async_register_netatmo_webhook(api: NetatmoAPI, webhook_url: str) -> bool:
+    """Tell Netatmo where to push events.
+
+    One retry, never fatal: if this fails the integration keeps polling at the old
+    interval, so a broken registration degrades instead of taking the entry down (#11).
+    """
+    for attempt in range(1, WEBHOOK_REGISTER_ATTEMPTS + 1):
+        try:
+            await api.async_add_webhook(webhook_url)
+        except Exception as err:
+            if attempt == WEBHOOK_REGISTER_ATTEMPTS:
+                _LOGGER.warning("Netatmo webhook registration failed, staying on polling: %s", err)
+                return False
+            await asyncio.sleep(WEBHOOK_REGISTER_RETRY_DELAY)
+        else:
+            _LOGGER.info("Netatmo will push events to %s", webhook_url)
+            return True
+    return False
 
 
 def relay_device_id(hass: HomeAssistant, relay_module_id: str | None) -> str | None:
@@ -119,10 +143,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             client_secret = getattr(implementation, "client_secret", None)
             webhook_url = await async_setup_webhook(hass, webhook_id, coordinator, client_secret)
             if webhook_url:
-                _LOGGER.info(
-                    "Netatmo webhook registered. " "Webhook URL for dev.netatmo.com: %s",
-                    webhook_url,
-                )
+                _LOGGER.info("Webhook URL: %s", webhook_url)
+                if await _async_register_netatmo_webhook(api, webhook_url):
+                    coordinator.enable_reconcile_polling()
 
         # Forward setup to platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -159,10 +182,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        # Unregister webhook
+        # Unregister webhook, and tell Netatmo to stop pushing to it.
         webhook_id = entry.data.get(CONF_WEBHOOK_ID)
         if webhook_id:
             async_unregister_webhook(hass, webhook_id)
+            runtime = entry.runtime_data
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    await runtime.api.async_drop_webhook()
 
         # Release runtime data
         entry.runtime_data = None

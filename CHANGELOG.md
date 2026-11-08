@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format is based on
 
 _Nothing yet._
 
+## [1.4.0] - 2026-11-08
+
+### Added
+- The integration registers its webhook with Netatmo itself (`api/addwebhook`) instead of
+  printing a URL to paste into dev.netatmo.com, and drops it (`api/dropwebhook`) on unload.
+  One retry on failure, and a failure is never fatal: the entry keeps polling as before, so a
+  rejected registration degrades the integration rather than breaking it.
+
+### Changed
+- Once the registration succeeds the poller becomes a reconciler: 300 s instead of 60 s, with
+  the existing immediate refresh on every incoming event. Netatmo reduces polling rate limits
+  for polling-based integrations from 1 March 2027, and the 60 s poll plus the 5 s setpoint
+  guard are exactly what those limits target.
+
 ## [1.3.5] - 2026-11-08
 
 ### Added

@@ -430,12 +430,21 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         return False
 
     def _selected_schedule(self) -> tuple[str | None, str | None]:
-        """Return the schedule this home is following, as (id, name).
+        """Return the schedule THIS ROOM is following, as (id, name).
 
-        homesdata normally carries ``therm_program`` (older payloads: ``schedule_id``);
-        when it is missing we reuse the same inference the setpoint logic already uses,
-        so the attribute is populated either way. Feature request #16: without it Home
-        Assistant never learns that someone switched the schedule in the Netatmo app.
+        A home with several thermostats follows a different schedule per room, but
+        homesdata only carries one home-level ``therm_program``. Reading it directly
+        mislabelled every room except the thermostat that program belongs to (#22).
+        Preference order, most specific first:
+
+        1. the program recorded on this room's own module (homesdata or homestatus),
+        2. the single schedule whose zone for this room carries the setpoint applied
+           right now, when exactly one schedule matches,
+        3. the home-level ``therm_program`` (correct for single-thermostat homes),
+        4. the setpoint inference already used by the setpoint guard.
+
+        Non-dict entries are skipped: some payloads carry bare schedule ids, which
+        used to raise AttributeError here and abort the whole state write.
         """
         homes = ((self.coordinator.data or {}).get("homes_data") or {}).get("body", {}).get(
             "homes"
@@ -444,17 +453,77 @@ class NetatmoThermostat(CoordinatorEntity, ClimateEntity):
         if not home:
             return None, None
 
-        schedules = home.get("schedules") or []
+        schedules = [s for s in (home.get("schedules") or []) if isinstance(s, dict)]
+        if not schedules:
+            return None, None
         by_id = {sched.get("id"): sched for sched in schedules if sched.get("id")}
         program_id = home.get("therm_program") or home.get("schedule_id")
+
+        module_program = self._module_therm_program(home)
+        if module_program and module_program in by_id:
+            return module_program, by_id[module_program].get("name")
+
+        matches = self._schedules_matching_room_setpoint(schedules)
+        if len(matches) == 1 and matches[0].get("id"):
+            return matches[0].get("id"), matches[0].get("name")
+
         if program_id and program_id in by_id:
             return program_id, by_id[program_id].get("name")
 
         inferred, _timezone = self._active_schedules()
         for sched in inferred:
-            if sched.get("id"):
+            if isinstance(sched, dict) and sched.get("id"):
                 return sched.get("id"), sched.get("name")
         return (program_id, None) if program_id else (None, None)
+
+    def _module_therm_program(self, home: dict[str, Any]) -> str | None:
+        """Return the program id recorded on this room's own thermostat, if any."""
+        module_id = (getattr(self, "_module", None) or {}).get("id")
+        if not module_id:
+            return None
+        for source in (
+            (home.get("modules") or []),
+            (
+                ((self.coordinator.data or {}).get("home_status") or {})
+                .get("body", {})
+                .get("home", {})
+                .get("modules")
+                or []
+            ),
+        ):
+            for module in source:
+                if isinstance(module, dict) and module.get("id") == module_id:
+                    program = module.get("therm_program") or module.get("schedule_id")
+                    if program:
+                        return program
+        return None
+
+    def _schedules_matching_room_setpoint(
+        self, schedules: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Schedules whose zone for this room carries the setpoint applied now."""
+        status = self._get_room_status() or {}
+        target = status.get("therm_setpoint_temperature")
+        if target is None or status.get("therm_setpoint_mode") != "schedule":
+            target = getattr(self, "_last_schedule_setpoint", None)
+        if target is None:
+            return []
+
+        matches: list[dict[str, Any]] = []
+        for sched in schedules:
+            for zone in sched.get("zones") or []:
+                if not isinstance(zone, dict):
+                    continue
+                for entry in zone.get("rooms_temp") or []:
+                    if not isinstance(entry, dict) or entry.get("room_id") != self._room_id:
+                        continue
+                    if abs((entry.get("temp") or -999) - target) < 0.01:
+                        matches.append(sched)
+                        break
+                else:
+                    continue
+                break
+        return matches
 
     def _active_schedules(self) -> tuple[list[dict[str, Any]], str | None]:
         """Return the schedules governing this room's setpoints, plus the home timezone.

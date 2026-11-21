@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format is based on
 
 _Nothing yet._
 
+## [1.4.1] - 2026-11-21
+
+### Fixed
+- The `selected_schedule` / `selected_schedule_id` attributes now describe the schedule the
+  **room** is following rather than the home-level program (#22). A home with several
+  thermostats follows a different schedule per room, so every room except the thermostat that
+  owned `therm_program` was labelled with the wrong schedule. Resolution is now most-specific
+  first: the room's own module program, then the single schedule whose zone carries the
+  setpoint applied right now, then the home-level program, then the setpoint inference.
+- `_selected_schedule` no longer raises `AttributeError: 'str' object has no attribute 'get'`
+  on payloads that carry bare schedule ids instead of dicts. The exception escaped from
+  `extra_state_attributes` and aborted the entire state write for the affected entity.
+
 ## [1.4.0] - 2026-11-08
 
 ### Added

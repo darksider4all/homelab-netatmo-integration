@@ -688,11 +688,50 @@ SCHEDULES = [
 
 
 def test_selected_schedule_is_exposed_from_therm_program(home_status, homes_data):
-    """The active program id and its name land on the entity (#16)."""
+    """The active program id and its name land on the entity (#16).
+
+    The room setpoint is deliberately left out of every schedule here, so the
+    home-level program is the best signal available and must be used.
+    """
+    _set_room_mode(home_status, "schedule")
+    home_status["body"]["home"]["rooms"][0]["therm_setpoint_temperature"] = 25.0
     entity = _make_entity(home_status, _with_schedules(homes_data, SCHEDULES, "sched-away"))
     attrs = entity.extra_state_attributes
     assert attrs["selected_schedule_id"] == "sched-away"
     assert attrs["selected_schedule"] == "Away"
+
+
+def test_selected_schedule_prefers_the_rooms_own_module_program(home_status, homes_data):
+    """A per-module program beats the home-level one (#22)."""
+    data = _with_schedules(homes_data, SCHEDULES, "sched-away")
+    for module in data["body"]["homes"][0]["modules"]:
+        if module["id"] == "therm-1":
+            module["therm_program"] = "sched-home"
+    entity = _make_entity(home_status, data)
+    attrs = entity.extra_state_attributes
+    assert attrs["selected_schedule_id"] == "sched-home"
+    assert attrs["selected_schedule"] == "Home"
+
+
+def test_selected_schedule_uses_the_room_setpoint_over_the_home_program(home_status, homes_data):
+    """#22: with two thermostats the home program labels the wrong room.
+
+    The room is being held at 20 °C, which only 'Home' carries for this room, so
+    the room's own schedule must win over the home-level 'Away' program.
+    """
+    _set_room_mode(home_status, "schedule")
+    entity = _make_entity(home_status, _with_schedules(homes_data, SCHEDULES, "sched-away"))
+    attrs = entity.extra_state_attributes
+    assert attrs["selected_schedule_id"] == "sched-home"
+    assert attrs["selected_schedule"] == "Home"
+
+
+def test_selected_schedule_ignores_non_dict_schedule_entries(home_status, homes_data):
+    """Bare schedule ids in the payload must not raise (AttributeError regression)."""
+    data = _with_schedules(homes_data, ["sched-home", "sched-away"], "sched-away")
+    entity = _make_entity(home_status, data)
+    attrs = entity.extra_state_attributes
+    assert "selected_schedule" not in attrs or isinstance(attrs["selected_schedule"], str)
 
 
 def test_selected_schedule_falls_back_to_inference(home_status, homes_data):
